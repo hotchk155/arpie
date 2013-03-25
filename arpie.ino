@@ -4,6 +4,9 @@
 #include <avr/interrupt.h>  
 #include <avr/io.h>
 
+byte qq;
+#define FLASH_HOLD { digitalWrite(P_UI_HOLD_LED,qq); qq=!qq; }
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
@@ -40,8 +43,8 @@
 #define DEBOUNCE_COUNT 50
 
 #define LED_BRIGHT 255
-#define LED_MEDIUM 16
-#define LED_DIM 2
+#define LED_MEDIUM 25//16
+#define LED_DIM 1
 #define LED_OFF 0
 
 #define UI_IN_LED_TIME     20
@@ -334,7 +337,7 @@ void uiRun(unsigned long milliseconds)
 
 // state variables
 byte midiInRunningStatus;
-byte midiOutRunningStatus;
+//byte midiOutRunningStatus;
 byte midiNumParams;
 byte midiParams[2];
 byte midiSendChannel;
@@ -342,8 +345,8 @@ byte midiSendChannel;
 // macros
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
 #define MIDI_IS_NOTE_OFF(msg) ((msg & 0xf0) == 0x80)
-#define MIDI_MK_NOTE_ON (0x90 | midiSendChannel)
-#define MIDI_MK_NOTE_OFF (0x80 | midiSendChannel)
+#define MIDI_MK_NOTE (0x90 | midiSendChannel)
+
 
 // realtime synch messages
 #define MIDI_SYNCH_TICK     0xf8
@@ -361,7 +364,7 @@ void midiInit()
   Serial.flush();
 
   midiInRunningStatus = 0;
-  midiOutRunningStatus = 0;
+//  midiOutRunningStatus = 0;
   midiNumParams = 0;
   midiSendChannel = 0;
 }
@@ -371,24 +374,24 @@ void midiInit()
 void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsigned long milliseconds)
 {
 // TODO: sysex passthru should set running status?
-  if((statusByte & 0xf0) == 0xf0)
-  {
+//  if((statusByte & 0xf0) == 0xf0)
+//  {
     // realtime byte pass straight through
-    Serial.write(statusByte);
-  }
-  else
-  {
+//    Serial.write(statusByte);
+//  }
+//  else
+//  {
     // send channel message
-    if(midiOutRunningStatus != statusByte)
-    {
+//    if(midiOutRunningStatus != statusByte)
+//    {
       Serial.write(statusByte);
-      midiOutRunningStatus = statusByte;
-    }
+//      midiOutRunningStatus = statusByte;
+//    }
     if(numParams > 0)
       Serial.write(param1);
     if(numParams > 1)
       Serial.write(param2);    
-  }
+//  }
   
   // indicate activity
   uiFlashOutLED(milliseconds);
@@ -482,6 +485,13 @@ void midiSendRealTime(byte msg)
   Serial.write(msg);
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// MIDI PANIC
+void midiPanic()
+{  
+  for(int i=0;i<128;++i)
+    midiWrite(MIDI_MK_NOTE, i, 0, 2, millis());    
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -507,6 +517,10 @@ byte synchRestartPlay;                // restart play index flag
 int synchBPM;                         // internal synch bpm
 int synchInternalTickPeriod;          // internal synch millseconds per tick
 unsigned long synchNextInternalTick;  // internal synch next tick time
+
+unsigned long synchLastStepTime;      // the last step time
+unsigned long synchStepPeriod;          // the last step time
+
 
 byte synchBeat;                       // flag for flashing the SYNCH lamp
 byte synchSendEvent;                  // synch events to send
@@ -550,6 +564,10 @@ void synchTick()
   ++synchTickCount;
   if(!(synchTickCount % synchPlayRate))
   {
+    unsigned long ms = millis();
+    if(synchLastStepTime > 0)
+        synchStepPeriod = ms - synchLastStepTime;
+    synchLastStepTime = ms;
     if(synchRestartPlay)
     {
       synchPlayIndex = 0;
@@ -574,6 +592,7 @@ void synchTick()
 // SYNCH RESTART
 void synchRestart()
 {
+  synchLastStepTime = millis();
   synchTickCount = 0;
   synchPlayIndex = 0;
   synchPlayAdvance = 1;
@@ -623,6 +642,9 @@ void synchInit()
 
   // set default play rate
   synchPlayRate = SYNCH_RATE_16;
+
+  synchLastStepTime = 0;
+  synchStepPeriod = 0;
   
   // reset the counters
   synchRestart();
@@ -1104,8 +1126,8 @@ void arpReadInput(unsigned long milliseconds)
 
       // first note of a chord restarts the arpeggiator
       // sequence from the first beat
-      if(!arpChordLength)
-        synchRestartPlay = 1;
+      if(!arpChordLength && !uiHoldEnabled)
+        synchRestartPlay=1;
         
       // room for another note?
       if(arpChordLength < ARP_MAX_CHORD-1)
@@ -1202,7 +1224,7 @@ void arpRun(unsigned long milliseconds)
 
   // have we updated the play position?
   if(synchPlayAdvance && arpSequenceLength && arpPatternLength)
-  {           
+  {                 
     // get the index into the arpeggio sequence
     int sequenceIndex = synchPlayIndex % arpSequenceLength;
 
@@ -1221,22 +1243,21 @@ void arpRun(unsigned long milliseconds)
 
         // start the note playing
         if(note > 0)
-          midiWrite(MIDI_MK_NOTE_ON, note, velocity, 2, milliseconds);
+          midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);
 
         // if the previous note is still playing then stop it
         // (should be the case only for "tie" mode)
         if(arpStopNote && arpStopNote != note)
         {
-          midiWrite(MIDI_MK_NOTE_OFF, arpStopNote, 0, 2, milliseconds);
+          midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
         }
 
         // need to work out the gate length for this note
         arpStopNote = note;
         if(arpGateLength)
         {              
-          // determined by user entered gate length
-          unsigned long stepLength = milliseconds - arpLastPlayAdvance;
-          arpStopNoteTime = milliseconds + (stepLength * arpGateLength) / 16;
+          // Set the stop period to occur after a certain
+          arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 16;
         }
         else
         {
@@ -1258,7 +1279,7 @@ void arpRun(unsigned long milliseconds)
     (!arpStopNoteTime && !arpSequenceLength))))
   {
     // stop the ringing note
-    midiWrite(MIDI_MK_NOTE_OFF, arpStopNote, 0, 2, milliseconds);
+    midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
     arpStopNote = 0;
     arpStopNoteTime = 0;
   }
@@ -1304,23 +1325,30 @@ enum {
 // edit mode after last button press
 #define EDIT_REVERT_TIME 10000
 
+// Time in ms that counts as a long button press
+#define EDIT_LONG_HOLD_TIME 2000
+
 // current editing mode
 byte editMode;
 
 // track the revert time
 unsigned long editRevertTime;
 
+// track when a menu button is held for a long period of time
+unsigned long editLongHoldTime;
+
 ////////////////////////////////////////////////////////////////////////////////
 // INIT EDITING
 void editInit()
 {
   editMode = EDIT_MODE_PATTERN;
-  editRevertTime = 0;
+  editRevertTime = 1;  // force a display refresh on startup
+  editLongHoldTime = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // EDIT PATTERN
-void editPattern(byte keyPress, byte forceRefresh)
+void editPattern(char keyPress, byte forceRefresh, byte isLongHold)
 {
   if(keyPress != NO_VALUE)
   {
@@ -1329,12 +1357,7 @@ void editPattern(byte keyPress, byte forceRefresh)
   }
 
   if(forceRefresh || arpRefresh)
-  {
-//    int i= arpChordLength;
-//    uiClearLeds();
-//    uiSetLeds(0, i, LED_MEDIUM);
-//    if(i<0) uiSetLeds(0, 15, LED_BRIGHT);
-    
+  {    
     // copy the leds
     for(int i=0; i<16; ++i)
       uiLeds[i] = arpPattern[i] ? LED_MEDIUM : LED_OFF;
@@ -1350,7 +1373,7 @@ void editPattern(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT PATTERN LENGTH
-void editPatternLength(byte keyPress, byte forceRefresh)
+void editPatternLength(char keyPress, byte forceRefresh, byte isLongHold)
 {
   int i;
   if(keyPress >= 0 && keyPress <= 15)
@@ -1369,7 +1392,7 @@ void editPatternLength(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT ARPEGGIO TYPE
-void editArpType(byte keyPress, byte forceRefresh)
+void editArpType(char keyPress, byte forceRefresh, byte isLongHold)
 {
   int i;
   switch(keyPress)
@@ -1405,7 +1428,7 @@ void editArpType(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT OCTAVE SHIFT
-void editOctaveShift(byte keyPress, byte forceRefresh)
+void editOctaveShift(char keyPress, byte forceRefresh, byte isLongHold)
 {
   if(keyPress >= 0 && keyPress <= 6)
   {
@@ -1425,7 +1448,7 @@ void editOctaveShift(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT OCTAVE SPAN
-void editOctaveSpan(byte keyPress, byte forceRefresh)
+void editOctaveSpan(char keyPress, byte forceRefresh, byte isLongHold)
 {
   if(keyPress >= 0 && keyPress <= 3)
   {
@@ -1444,7 +1467,7 @@ void editOctaveSpan(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT ARP RATE
-void editRate(byte keyPress, byte forceRefresh)
+void editRate(char keyPress, byte forceRefresh, byte isLongHold)
 {
   byte rates[] = {
     SYNCH_RATE_1,
@@ -1490,7 +1513,7 @@ void editRate(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT VELOCITY
-void editVelocity(byte keyPress, byte forceRefresh)
+void editVelocity(char keyPress, byte forceRefresh, byte isLongHold)
 {
   if(keyPress > 0 && keyPress <= 15)
   {    
@@ -1516,7 +1539,7 @@ void editVelocity(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT GATE LENGTH
-void editGateLength(byte keyPress, byte forceRefresh)
+void editGateLength(char keyPress, byte forceRefresh, byte isLongHold)
 {
   if(keyPress >= 0 && keyPress <= 14)
   {    
@@ -1546,7 +1569,7 @@ void editGateLength(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT NOTE INSERT MODE
-void editInsertMode(byte keyPress, byte forceRefresh)
+void editInsertMode(char keyPress, byte forceRefresh, byte isLongHold)
 {
   int i,j,note;
   switch(keyPress)
@@ -1626,7 +1649,7 @@ void editInsertMode(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT SYNCH MODE AND TEMPO
-void editTempoSynch(byte keyPress, byte forceRefresh)
+void editTempoSynch(char keyPress, byte forceRefresh, byte isLongHold)
 {
   switch(keyPress)
   {
@@ -1706,15 +1729,18 @@ void editTempoSynch(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT MIDI OUTPUT CHANNEL
-void editMidiChannel(byte keyPress, byte forceRefresh)
+void editMidiChannel(char keyPress, byte forceRefresh, byte isLongHold)
 {
+  if(isLongHold)
+    midiPanic();
+  
   // 0123456789012345
   // DDDOXXXXXXXXXXXX        
   if(keyPress >= 0 && keyPress <= 15)
   {
     if((midiSendChannel != keyPress) && arpStopNote)
     {
-      midiWrite(MIDI_MK_NOTE_OFF, arpStopNote, 0, 2, millis());
+      midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, millis());
       arpStopNote = 0;
     }
     midiSendChannel = keyPress;
@@ -1731,7 +1757,7 @@ void editMidiChannel(byte keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT NOTE TRANSPOSE
-void editTranspose(byte keyPress, byte forceRefresh)
+void editTranspose(char keyPress, byte forceRefresh, byte isLongHold)
 {
   // 0123456789012345
   // DDDOXXXXXXXXXXXX        
@@ -1741,7 +1767,7 @@ void editTranspose(byte keyPress, byte forceRefresh)
     arpRebuild = 1;
     forceRefresh = 1;
   }
-
+  
   if(forceRefresh)
   {
     uiClearLeds();
@@ -1756,6 +1782,7 @@ void editTranspose(byte keyPress, byte forceRefresh)
 void editRun(unsigned long milliseconds)
 {
   byte forceRefresh = 0;
+  byte isLongHold = 0;
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
@@ -1771,6 +1798,7 @@ void editRun(unsigned long milliseconds)
   char menuKeyPress = uiMenuKey;
   if(menuKeyPress != NO_VALUE)
   {
+      
     uiMenuKey = NO_VALUE;
     if(menuKeyPress != editMode)
     {
@@ -1782,58 +1810,75 @@ void editRun(unsigned long milliseconds)
     editRevertTime = milliseconds + EDIT_REVERT_TIME;
   }
 
+  if(uiLastMenuKey != NO_VALUE)
+  {
+    // set a time at which the "long hold" event happens
+    if(!editLongHoldTime)
+    {
+      editLongHoldTime = milliseconds + EDIT_LONG_HOLD_TIME;
+    }
+    else if(milliseconds > editLongHoldTime)
+    {
+      isLongHold = 1;
+      
+      // set time to infinity so it does not fire again for same press
+      editLongHoldTime = (unsigned long)(-1);      
+    }
+  }
+  else
+  {
+    editLongHoldTime = 0;
+  }
+  
   // check if we timed out user input and should revert
   // to pattern edit mode  
   if(editRevertTime > 0 && editRevertTime < milliseconds)
   {
-    editRevertTime = 0;
-    if(editMode != EDIT_MODE_PATTERN)
-    {
       // revert back to pattern edit mode
       editMode = EDIT_MODE_PATTERN;
+      editRevertTime = 0;
       forceRefresh = 1;
-    }
   }
-
+  
   // run the current edit mode
   switch(editMode)
   {
   case EDIT_MODE_PATTERN_LENGTH:
-    editPatternLength(dataKeyPress, forceRefresh);
+    editPatternLength(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_ARP_TYPE:
-    editArpType(dataKeyPress, forceRefresh);
+    editArpType(dataKeyPress, forceRefresh, isLongHold);
     break;        
   case EDIT_MODE_OCTAVE_SHIFT:
-    editOctaveShift(dataKeyPress, forceRefresh);
+    editOctaveShift(dataKeyPress, forceRefresh, isLongHold);
     break;
   case EDIT_MODE_OCTAVE_SPAN:
-    editOctaveSpan(dataKeyPress, forceRefresh);
+    editOctaveSpan(dataKeyPress, forceRefresh, isLongHold);
     break;
   case EDIT_MODE_RATE:
-    editRate(dataKeyPress, forceRefresh);
+    editRate(dataKeyPress, forceRefresh, isLongHold);
     break;
   case EDIT_MODE_VELOCITY:
-    editVelocity(dataKeyPress, forceRefresh);
+    editVelocity(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_GATE_LENGTH:
-    editGateLength(dataKeyPress, forceRefresh);
+    editGateLength(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_INSERT:
-    editInsertMode(dataKeyPress, forceRefresh);
+    editInsertMode(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_TEMPO_SYNCH:
-    editTempoSynch(dataKeyPress, forceRefresh);
+    editTempoSynch(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_CHANNEL:
-    editMidiChannel(dataKeyPress, forceRefresh);
+    editMidiChannel(dataKeyPress, forceRefresh, isLongHold);
     break;    
   case EDIT_MODE_TRANSPOSE:
-    editTranspose(dataKeyPress, forceRefresh);
+    editTranspose(dataKeyPress, forceRefresh, isLongHold);
     break;        
   case EDIT_MODE_PATTERN:
   default:
-    editPattern(dataKeyPress, forceRefresh);
+    editPattern(dataKeyPress, forceRefresh, isLongHold);
     break;   
   }    
 }    
