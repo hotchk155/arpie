@@ -1,13 +1,14 @@
 R1,R2, R3, R4, R18				220R
 R11, R12, R14, R15, R16, R17, R19, R20		1k
 R5, R6, R7, R8					1k8
-R9						10k
-R10, R13					100k
+R9, R10, R13						10k
+					
 C5, C6						33pF ceramic
-C1, C2, C3, C4, C9				100nF Ceramic
+C1, C2, C3, C4			100nF Ceramic
 C7, C8						4u7 electrolytic
+C9 						100nF (for auto reset)
 D1, D2						1N4148
-D3						1N4004
+D3						1N4001
 TR1						2N3904
 IC1						ATMEGA328P-PU 
 IC2						PIC12F1822
