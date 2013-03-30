@@ -728,6 +728,7 @@ void synchRun(unsigned long milliseconds)
 #define ARP_GET_NOTE(x) ((x)&0x7f)
 #define ARP_GET_VELOCITY(x) (((x)>>8)&0x7f)
 #define ARP_MAX_SEQUENCE 100
+#define ARP_NOTE_HELD 0x8000
 
 // Values for arpType
 enum 
@@ -759,7 +760,7 @@ byte arpGateLength;        // gate length (0 = tie notes)
 char arpTranspose;         // up/down transpose
 
 // CHORD INFO - notes held by user
-int arpChord[ARP_MAX_CHORD];
+unsigned int arpChord[ARP_MAX_CHORD];
 int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
 
@@ -1089,6 +1090,7 @@ void arpBuildSequence()
 void arpReadInput(unsigned long milliseconds)
 {
   int i;
+  char noteIndexInChord; 
 
   // we may have multiple notes to read
   for(;;)
@@ -1118,63 +1120,80 @@ void arpReadInput(unsigned long milliseconds)
     // NOTE ON?
     else if(MIDI_IS_NOTE_ON(msg) && velocity && note)
     {
+      
+      // first note of a chord restarts the arpeggiator
+      // sequence from the first beat
+      if(!arpChordLength && !uiHoldEnabled)
+        synchRestartPlay=1;
+
+      // check if the note is already in the chord
+      // and also count how many notes in the chord
+      // are currently held down
+      noteIndexInChord = -1;
+      arpNotesHeld = 0;
+      for(i=0;i<arpChordLength;++i)
+      {        
+        if(ARP_GET_NOTE(arpChord[i])== note)
+        {
+          // mark it as held
+          arpChord[i] |= ARP_NOTE_HELD;
+          arpNotesHeld++;
+          noteIndexInChord = i;
+        }
+        else if(arpChord[i] & ARP_NOTE_HELD)
+        {
+          arpNotesHeld++;
+        }
+      }
+      
       // If we in hold mode and has the user released all
       // notes of the previous chord, then a new chord is
       // started with the first new note
       if(uiHoldEnabled && !arpNotesHeld)
         arpChordLength = 0;
-
-      // first note of a chord restarts the arpeggiator
-      // sequence from the first beat
-      if(!arpChordLength && !uiHoldEnabled)
-        synchRestartPlay=1;
         
-      // room for another note?
-      if(arpChordLength < ARP_MAX_CHORD-1)
+      // if the note is not already in the chord, and we
+      // we have space to allow another note...
+      if(noteIndexInChord<0 && arpChordLength < ARP_MAX_CHORD-1)
       {        
-        // ensure we don't somehow end up with duplicate
-        // notes in the chord (should not happen, since
-        // we should get a note off before another note
-        // on... but just in case)
-        for(i=0;i<arpChordLength;++i)
-        {
-          if(ARP_GET_NOTE(arpChord[i])== note)
-            break;
-        }
-        if(i == arpChordLength)
-        {
           // insert the new note into the chord                   
           arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
+          arpChord[arpChordLength] |= ARP_NOTE_HELD;
           arpChordLength++;
+          arpNotesHeld++;
           
           // flag that the arp sequence needs to be rebuilt
-          arpRebuild = 1;
-        }
-      }
-  
-      // track the number of notes held by the user
-      ++arpNotesHeld;  
+          arpRebuild = 1;          
+      }  
     }
     // user releases a note (NB might be note on with zero velocity)
     else if(MIDI_IS_NOTE_ON(msg) || MIDI_IS_NOTE_OFF(msg))
     {
-      // one less note that is still held
-      --arpNotesHeld;
- 
+       // unflag the note as "held" and count how many notes of
+       // the chord are actually still held
+       noteIndexInChord = -1;
+       arpNotesHeld = 0;
+       for(i=0; i<arpChordLength; ++i)
+       {
+         // did we find the released key in the chord?
+         if(ARP_GET_NOTE(arpChord[i]) == note)
+         {
+           arpChord[i] &= ~ARP_NOTE_HELD;
+           noteIndexInChord = i;
+         }
+         else if(arpChord[i] & ARP_NOTE_HELD)
+         {
+           arpNotesHeld++;
+         }
+      }
+      
       // should the note be removed from the chord?
-      if(!uiHoldEnabled)
+      if(!uiHoldEnabled && noteIndexInChord >= 0)
       {     
-        // search for the note in the chord
-        for(i=0; i<arpChordLength; ++i)
-        {
-          // did we find the released key in the chord?
-          if(ARP_GET_NOTE(arpChord[i]) == note)
-            break;
-        }
         
         // shift higher notes down one position
         // to remove the released note
-        for(; i < arpChordLength-1; ++i)
+        for(i = noteIndexInChord;i < arpChordLength-1; ++i)
           arpChord[i] = arpChord[i+1];
     
         // rebuild the sequence
