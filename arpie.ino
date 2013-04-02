@@ -340,6 +340,7 @@ byte midiInRunningStatus;
 byte midiOutRunningStatus;
 byte midiNumParams;
 byte midiParams[2];
+char midiParamIndex;
 byte midiSendChannel;
 byte midiReceiveChannel;
 
@@ -368,6 +369,7 @@ void midiInit()
   midiInRunningStatus = 0;
   midiOutRunningStatus = 0;
   midiNumParams = 0;
+  midiParamIndex = 0;
   midiSendChannel = 0;
   midiReceiveChannel = MIDI_OMNI;
 }
@@ -400,6 +402,94 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
   uiFlashOutLED(milliseconds);
 }
 
+byte midiRead(unsigned long milliseconds, byte passThru)
+{
+  byte receiveMask1 = 0x80|midiReceiveChannel;
+  byte receiveMask2 = 0x90|midiReceiveChannel;
+  
+  // loop while we have incoming MIDI serial data
+  while(Serial.available())
+  {    
+    // fetch the next byte
+    byte ch = Serial.read();
+
+    // REALTIME MESSAGE
+    if((ch & 0xf0) == 0xf0)
+    {
+      // all realtime messages are sent to MIDI thru
+      Serial.write(ch);
+      switch(ch)
+      {
+          case MIDI_SYNCH_TICK:
+            synchTick(0);
+            break;            
+          case MIDI_SYNCH_START:
+            synchRestart();
+            break;
+          //case MIDI_SYNCH_CONTINUE:
+          //case MIDI_SYNCH_STOP:
+      }
+    }      
+    // CHANNEL STATUS MESSAGE
+    else if(!!(ch & 0x80))
+    {
+      midiParamIndex = 0;
+      midiInRunningStatus = ch; 
+      switch(ch & 0xF0)
+      {
+        case 0xD0: //  Channel Pressure  1  pressure  
+          midiNumParams = 1;
+          break;    
+        case 0x80: //  Note-off  2  key  velocity  
+        case 0x90: //  Note-on  2  key  veolcity  
+        case 0xA0: //  Aftertouch  2  key  touch  
+        case 0xB0: //  Continuous controller  2  controller #  controller value  
+        case 0xC0: //  Patch change  2  instrument #   
+        case 0xE0: //  Pitch bend  2  lsb (7 bits)  msb (7 bits)  
+        default:
+          midiNumParams = 2;
+          break;        
+      }
+    }    
+    else if(midiInRunningStatus)
+    {
+      // gathering parameters
+      midiParams[midiParamIndex++] = ch;
+      if(midiParamIndex >= midiNumParams)
+      {
+        midiParamIndex = 0;
+        
+        // flash the LED
+        uiFlashInLED(milliseconds);
+        
+        // is it a channel message for our channel?
+        if(MIDI_OMNI == midiReceiveChannel ||
+          (midiInRunningStatus & midiReceiveChannel) == midiReceiveChannel)
+        {
+          switch(midiInRunningStatus & 0xF0)
+          {
+            case 0x80: // note off
+            case 0x90: // note on
+              return midiInRunningStatus; // return to the arp engine
+            default:
+              // send to the new channel
+              midiWrite((midiInRunningStatus & 0xF0)|midiSendChannel, midiParams[0], midiParams[1], midiNumParams, milliseconds);
+          }
+        }
+        else
+        {                
+          // send thru to output
+          midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+
+
+/*
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI READ / THRU
 byte midiRead(unsigned long milliseconds, byte passThru)
@@ -480,6 +570,7 @@ byte midiRead(unsigned long milliseconds, byte passThru)
   // nothing pending
   return 0;
 }
+*/
 
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI SEND REALTIME
@@ -570,7 +661,7 @@ enum
 
 //////////////////////////////////////////////////////////////////////////
 // SYNCH TICK
-void synchTick()
+void synchTick(byte sendToMIDI)
 {
   ++synchTickCount;
   if(!(synchTickCount % synchPlayRate))
@@ -598,7 +689,7 @@ void synchTick()
   if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
     synchBeat = 1;  
     
-  if(synchSendMIDI)
+  if(sendToMIDI)// synchSendMIDI)
   {
     synchSendEvent |= SYNCH_SEND_TICK;
   }
@@ -635,7 +726,7 @@ ISR(synchReset_ISR)
 //////////////////////////////////////////////////////////////////////////
 ISR(synchTick_ISR)
 {
-  synchTick();
+  synchTick(synchSendMIDI);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -693,7 +784,7 @@ void synchRun(unsigned long milliseconds)
     // need to generate our own ticks
     if(synchNextInternalTick < milliseconds)
     {
-      synchTick();
+      synchTick(synchSendMIDI);
       synchNextInternalTick = milliseconds + synchInternalTickPeriod;
     }
   }
@@ -1118,23 +1209,8 @@ void arpReadInput(unsigned long milliseconds)
     byte note = midiParams[0];
     byte velocity = midiParams[1];
 
-    // REALTIME
-    if((msg & 0xf0) == 0xf0)
-    {
-        switch(msg)
-        {
-          case MIDI_SYNCH_TICK:
-            synchTick();
-            break;            
-          case MIDI_SYNCH_START:
-            synchRestart();
-            break;
-          //case MIDI_SYNCH_CONTINUE:
-          //case MIDI_SYNCH_STOP:
-        }
-    }      
     // NOTE ON MESSAGE
-    else if(MIDI_IS_NOTE_ON(msg) && velocity && note)
+    if(MIDI_IS_NOTE_ON(msg) && velocity && note)
     {
       // scan the current chord for this note
       // to see if it is already part of the chord      
