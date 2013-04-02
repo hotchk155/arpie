@@ -513,7 +513,7 @@ unsigned long synchTickCount;         // tick count
 int synchPlayRate;                    // ratio of ticks per arp note
 unsigned long synchPlayIndex;         // arp note count
 byte synchPlayAdvance;                // flag to indicate that next arp note can be played
-byte synchRestartPlay;                // restart play index flag
+byte synchRestartSequenceOnNextBeat;  // restart play index flag
 int synchBPM;                         // internal synch bpm
 int synchInternalTickPeriod;          // internal synch millseconds per tick
 unsigned long synchNextInternalTick;  // internal synch next tick time
@@ -564,14 +564,19 @@ void synchTick()
   ++synchTickCount;
   if(!(synchTickCount % synchPlayRate))
   {
+    // store step length in ms.. this will be used
+    // when calculating step length
     unsigned long ms = millis();
     if(synchLastStepTime > 0)
         synchStepPeriod = ms - synchLastStepTime;
     synchLastStepTime = ms;
-    if(synchRestartPlay)
+    
+    // should the play sequence restart from the 
+    // beginning at this bext beat?
+    if(synchRestartSequenceOnNextBeat)
     {
       synchPlayIndex = 0;
-      synchRestartPlay = 0;
+      synchRestartSequenceOnNextBeat = 0;
     }
     else 
     {
@@ -589,14 +594,14 @@ void synchTick()
 }
 
 //////////////////////////////////////////////////////////////////////////
-// SYNCH RESTART
+// RESTART PLAY FROM START OF SEQUENCE IMMEDIATELY
 void synchRestart()
 {
   synchLastStepTime = millis();
   synchTickCount = 0;
   synchPlayIndex = 0;
   synchPlayAdvance = 1;
-  synchRestartPlay = 0;
+  synchRestartSequenceOnNextBeat = 0;
   synchBeat = 1;  
 }
 
@@ -1117,46 +1122,47 @@ void arpReadInput(unsigned long milliseconds)
           //case MIDI_SYNCH_STOP:
         }
     }      
-    // NOTE ON?
+    // NOTE ON MESSAGE
     else if(MIDI_IS_NOTE_ON(msg) && velocity && note)
     {
-      
-      // first note of a chord restarts the arpeggiator
-      // sequence from the first beat
-      if(!arpChordLength && !uiHoldEnabled)
-        synchRestartPlay=1;
-
-      // check if the note is already in the chord
-      // and also count how many notes in the chord
-      // are currently held down
+      // scan the current chord for this note
+      // to see if it is already part of the chord      
       noteIndexInChord = -1;
       arpNotesHeld = 0;
       for(i=0;i<arpChordLength;++i)
       {        
         if(ARP_GET_NOTE(arpChord[i])== note)
-        {
-          // mark it as held
-          arpChord[i] |= ARP_NOTE_HELD;
-          arpNotesHeld++;
           noteIndexInChord = i;
-        }
-        else if(arpChord[i] & ARP_NOTE_HELD)
-        {
+        if(arpChord[i] & ARP_NOTE_HELD)
+          arpNotesHeld++;
+      }
+
+      // is the note already part of the current chord?
+      if(noteIndexInChord >= 0)
+      {
+        // Mark the key as held. There is no change to the arpeggio
+        if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+        {        
+          arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
           arpNotesHeld++;
         }
       }
-      
-      // If we in hold mode and has the user released all
-      // notes of the previous chord, then a new chord is
-      // started with the first new note
-      if(uiHoldEnabled && !arpNotesHeld)
-        arpChordLength = 0;
-        
-      // if the note is not already in the chord, and we
-      // we have space to allow another note...
-      if(noteIndexInChord<0 && arpChordLength < ARP_MAX_CHORD-1)
-      {        
-          // insert the new note into the chord                   
+      else 
+      {
+        // if its the first note of a new chord then
+        // we need to restart play
+        if(!arpNotesHeld)
+        {
+          arpChordLength = 0;
+          if(uiHoldEnabled)
+            synchRestartSequenceOnNextBeat = 1;
+          else
+            synchRestart();
+        }
+                        
+        // insert the new note into the chord                   
+        if(arpChordLength < ARP_MAX_CHORD-1)
+        {        
           arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
           arpChord[arpChordLength] |= ARP_NOTE_HELD;
           arpChordLength++;
@@ -1164,9 +1170,11 @@ void arpReadInput(unsigned long milliseconds)
           
           // flag that the arp sequence needs to be rebuilt
           arpRebuild = 1;          
-      }  
+       }  
+      }
     }
-    // user releases a note (NB might be note on with zero velocity)
+    // NOTE OFF MESSAGE
+    // (NB might be note on with zero velocity)
     else if(MIDI_IS_NOTE_ON(msg) || MIDI_IS_NOTE_OFF(msg))
     {
        // unflag the note as "held" and count how many notes of
@@ -1240,7 +1248,7 @@ void arpRun(unsigned long milliseconds)
     arpBuildSequence();                
     arpRebuild = 0;
   }
-
+  
   // have we updated the play position?
   if(synchPlayAdvance && arpSequenceLength && arpPatternLength)
   {                 
