@@ -404,6 +404,7 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
 
 byte midiRead(unsigned long milliseconds, byte passThru)
 {
+  extern byte synchToMIDI;
   byte receiveMask1 = 0x80|midiReceiveChannel;
   byte receiveMask2 = 0x90|midiReceiveChannel;
   
@@ -421,10 +422,12 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       switch(ch)
       {
           case MIDI_SYNCH_TICK:
-            synchTick(0);
+            if(synchToMIDI)
+              synchTick(0);
             break;            
           case MIDI_SYNCH_START:
-            synchRestart();
+            if(synchToMIDI)
+              synchRestart();
             break;
           //case MIDI_SYNCH_CONTINUE:
           //case MIDI_SYNCH_STOP:
@@ -611,6 +614,7 @@ void midiClearRunningStatus()
 // variables
 byte synchToMIDI;                     // whether we're synching to MIDI
 byte synchSendMIDI;                   // whether the MIDI clock is to be sent
+byte synchSynchroniseSlaves;          // flag to say if a resynch is needed with synch slaves
 unsigned long synchTickCount;         // tick count
 int synchPlayRate;                    // ratio of ticks per arp note
 unsigned long synchPlayIndex;         // arp note count
@@ -689,7 +693,7 @@ void synchTick(byte sendToMIDI)
   if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
     synchBeat = 1;  
     
-  if(sendToMIDI)// synchSendMIDI)
+  if(sendToMIDI)
   {
     synchSendEvent |= SYNCH_SEND_TICK;
   }
@@ -746,6 +750,7 @@ void synchInit()
   
   // by default do not send synch
   synchSendMIDI = 0;
+  synchSynchroniseSlaves = 0;
 
   // set default play rate
   synchPlayRate = SYNCH_RATE_16;
@@ -781,8 +786,14 @@ void synchRun(unsigned long milliseconds)
   // are we synching to MIDI?
   if(!synchToMIDI)
   {      
+    if(synchSynchroniseSlaves)
+    {
+      synchNextInternalTick = milliseconds + synchInternalTickPeriod;
+      synchSendEvent = SYNCH_SEND_START;
+      synchSynchroniseSlaves = 0;
+    }
     // need to generate our own ticks
-    if(synchNextInternalTick < milliseconds)
+    else if(synchNextInternalTick < milliseconds)
     {
       synchTick(synchSendMIDI);
       synchNextInternalTick = milliseconds + synchInternalTickPeriod;
@@ -1225,7 +1236,7 @@ void arpReadInput(unsigned long milliseconds)
       }
 
       // is the note already part of the current chord?
-      if(noteIndexInChord >= 0)
+      if(noteIndexInChord >= 0 && arpNotesHeld)
       {
         // Mark the key as held. There is no change to the arpeggio
         if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
@@ -1793,7 +1804,9 @@ void editTempoSynch(char keyPress, byte forceRefresh)
     else
     {
       synchSendEvent |= SYNCH_SEND_START;
+      synchSynchroniseSlaves = 1;      
       synchSendMIDI = 1;
+      synchRestart();
     }
     forceRefresh = 1;
     break;
