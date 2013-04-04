@@ -490,91 +490,6 @@ byte midiRead(unsigned long milliseconds, byte passThru)
   return 0;
 }
 
-
-
-/*
-////////////////////////////////////////////////////////////////////////////////
-// MIDI READ / THRU
-byte midiRead(unsigned long milliseconds, byte passThru)
-{
-  // is anything available?
-  if(Serial.available())
-  {
-    // read next character
-    byte ch = Serial.read();
-    byte doThru = 0;
-
-    // Is it a status byte
-    if((ch & 0x80)>0)
-    {
-      // Interpret the status byte
-      switch(ch & 0xf0)
-      {
-      case 0x80: //  Note-off  2  key  velocity  
-      case 0x90: //  Note-on  2  key  veolcity  
-      case 0xA0: //  Aftertouch  2  key  touch  
-        midiInRunningStatus = ch;
-        midiNumParams = 2;
-        doThru = passThru;
-        break;
-
-      case 0xB0: //  Continuous controller  2  controller #  controller value  
-      case 0xC0: //  Patch change  2  instrument #   
-      case 0xE0: //  Pitch bend  2  lsb (7 bits)  msb (7 bits)  
-        midiInRunningStatus = ch;
-        midiNumParams = 2;
-        doThru = 1;
-        break;
-
-      case 0xD0: //  Channel Pressure  1  pressure  
-        midiInRunningStatus = ch;
-        midiNumParams = 1;
-        doThru = passThru;
-        break;
-
-      case 0xF0: //  Realtime etc, no params
-        return ch; 
-      }
-    }
-
-    // do we have an active message
-    if(midiInRunningStatus)
-    {
-      // read params for the message
-      for(int thisParam = 0; thisParam < midiNumParams; ++thisParam)
-      {
-        // they might not have arrived yet!
-        if(!Serial.available())
-        {
-          // if the next param is not ready then we need to wait
-          // for it... but not forever (we don't want to hang)
-          unsigned long midiTimeout = millis() + MIDI_PARAM_TIMEOUT;
-          while(!Serial.available())
-          {
-            if(millis() > midiTimeout)
-              return 0;
-          }
-        }
-        midiParams[thisParam] = Serial.read();
-      }
-
-      // echo to output if needed
-      if(doThru)
-        midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);
-
-      // flash the LED
-      uiFlashInLED(milliseconds);
-
-      // return the status byte (caller will read params from global variables)
-      return midiInRunningStatus;
-    }
-  }
-
-  // nothing pending
-  return 0;
-}
-*/
-
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI SEND REALTIME
 void midiSendRealTime(byte msg)
@@ -842,10 +757,10 @@ void synchRun(unsigned long milliseconds)
 
 // Macro defs
 #define ARP_MAX_CHORD 12
-#define ARP_MAKE_NOTE(note, vel) (((vel)<<8)|(note))
+#define ARP_MAKE_NOTE(note, vel) ((((unsigned int)vel)<<8)|(note))
 #define ARP_GET_NOTE(x) ((x)&0x7f)
 #define ARP_GET_VELOCITY(x) (((x)>>8)&0x7f)
-#define ARP_MAX_SEQUENCE 100
+#define ARP_MAX_SEQUENCE 60
 #define ARP_NOTE_HELD 0x8000
 
 // Values for arpType
@@ -873,7 +788,8 @@ byte arpType;              // arpeggio type
 char arpOctaveShift;       // octave transpose
 byte arpOctaveSpan;        // number of octaves to span with the arpeggio
 byte arpInsertMode;        // additional note insertion mode
-byte arpVelocity;          // velocity (0 = manual)
+byte arpVelocityMode;      // (0 = original, 1 = override)
+byte arpVelocity;          // velocity 
 byte arpGateLength;        // gate length (0 = tie notes)
 char arpTranspose;         // up/down transpose
 
@@ -883,7 +799,7 @@ int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
 
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
-byte arpSequence[ARP_MAX_SEQUENCE];
+unsigned int arpSequence[ARP_MAX_SEQUENCE];
 int arpSequenceLength;     // number of notes in the sequence
 
 // NOTE PATTERN - the rythmic pattern of played/muted notes
@@ -913,7 +829,8 @@ void arpInit()
   arpOctaveShift = 0;
   arpOctaveSpan = 1;
   arpInsertMode = ARP_INSERT_OFF;
-  arpVelocity = 127; //TODO - default manual
+  arpVelocity = 127;
+  arpVelocityMode = 1;
   arpChordLength = 0;
   arpNotesHeld = 0;
   arpPatternLength = 16;
@@ -924,7 +841,6 @@ void arpInit()
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
-
   
   // the pattern starts with all beats on
   for(int i=0;i<16;++i)
@@ -1368,7 +1284,7 @@ void arpRun(unsigned long milliseconds)
       if(arpPattern[arpPatternIndex])
       {
         byte note = ARP_GET_NOTE(arpSequence[sequenceIndex]);
-        byte velocity = (!arpVelocity)? ARP_GET_VELOCITY(arpSequence[sequenceIndex]) : arpVelocity;        
+        byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[sequenceIndex]);        
 
         // start the note playing
         if(note > 0)
@@ -1649,30 +1565,40 @@ void editRate(char keyPress, byte forceRefresh)
   }
 }
 
+
 /////////////////////////////////////////////////////
 // EDIT VELOCITY
-void editVelocity(char keyPress, byte forceRefresh)
+void editVelocity(char keyPress, byte forceRefresh, byte override)
 {
-  if(keyPress > 0 && keyPress <= 15)
-  {    
-    arpVelocity = (keyPress+1) * 8 - 1;
-    forceRefresh = 1;
-  }
-  else if(keyPress == 0)
-  {
-    arpVelocity = 0;
-    forceRefresh = 1;
-  }
 
-  if(forceRefresh)
+  if(!override)
   {
     uiClearLeds();
-    int z = 0;
-    if(arpVelocity > 0)
-      z = (arpVelocity+1)/8 - 1;
-    uiSetLeds(0, z, LED_MEDIUM);
-    uiLeds[z] = LED_BRIGHT;
+    uiLeds[15] = LED_BRIGHT;
   }  
+  else
+  {
+    if(keyPress > 0 && keyPress <= 15)
+    {    
+      arpVelocity = (keyPress+1) * 8 - 1;
+      forceRefresh = 1;
+    }
+    else if(0 == keyPress)
+    {
+      arpVelocity = 0;
+      forceRefresh = 1;
+    }
+  
+    if(forceRefresh)
+    {
+      uiClearLeds();
+      int z = 0;
+      if(arpVelocity > 0)
+        z = (arpVelocity+1)/8 - 1;
+      uiSetLeds(0, z, LED_MEDIUM);
+      uiLeds[z] = LED_BRIGHT;
+    }  
+  }
 }
 
 /////////////////////////////////////////////////////
@@ -2028,7 +1954,11 @@ void editRun(unsigned long milliseconds)
     editRate(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_VELOCITY:
-    editVelocity(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_PRESS == editPressType) {
+      arpVelocityMode = !arpVelocityMode;
+      forceRefresh = 1;
+    }
+    editVelocity(dataKeyPress, forceRefresh, arpVelocityMode);
     break;    
   case EDIT_MODE_GATE_LENGTH:
     editGateLength(dataKeyPress, forceRefresh);
