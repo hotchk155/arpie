@@ -3,10 +3,12 @@
 //
 #include <avr/interrupt.h>  
 #include <avr/io.h>
+#include <EEPROM.h>
 
 byte qq;
 #define FLASH_HOLD { digitalWrite(P_UI_HOLD_LED,qq); qq=!qq; }
 
+  
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
@@ -325,6 +327,41 @@ void uiRun(unsigned long milliseconds)
 //
 //
 //
+// EEPROM PROXY FUNCTIONS
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+enum {
+  EEPROM_INPUT_CHAN = 100,
+  EEPROM_OUTPUT_CHAN,
+  EEPROM_SYNCH_SOURCE,
+  EEPROM_SYNCH_SEND
+};
+void eepromSet(byte which, byte value)
+{
+  EEPROM.write(which, value);
+}
+byte eepromGet(byte which, byte minValue, byte maxValue, byte defaultValue)
+{
+  byte value = EEPROM.read(which);
+  if(value == defaultValue)
+    return value;
+  if(value < minValue || value > maxValue)
+  {
+    value = defaultValue;
+    eepromSet(which, value);
+  }
+  return value;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
 // LOW LEVEL MIDI HANDLING
 //
 //
@@ -370,8 +407,8 @@ void midiInit()
   midiOutRunningStatus = 0;
   midiNumParams = 0;
   midiParamIndex = 0;
-  midiSendChannel = 0;
-  midiReceiveChannel = MIDI_OMNI;
+  midiSendChannel = eepromGet(EEPROM_OUTPUT_CHAN, 0, 15, 0);
+  midiReceiveChannel = eepromGet(EEPROM_INPUT_CHAN, 0, 15, MIDI_OMNI);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -540,7 +577,7 @@ int synchInternalTickPeriod;          // internal synch millseconds per tick
 unsigned long synchNextInternalTick;  // internal synch next tick time
 
 unsigned long synchLastStepTime;      // the last step time
-unsigned long synchStepPeriod;          // the last step time
+unsigned long synchStepPeriod;          // period between steps
 
 
 byte synchBeat;                       // flag for flashing the SYNCH lamp
@@ -661,10 +698,10 @@ void synchSetTempo(int bpm)
 void synchInit()
 {
   // by default don't synch
-  synchToMIDI = 0; 
+  synchToMIDI = eepromGet(EEPROM_SYNCH_SOURCE,0,1,0);
   
   // by default do not send synch
-  synchSendMIDI = 0;
+  synchSendMIDI = eepromGet(EEPROM_SYNCH_SEND,0,1,0);
   synchSynchroniseSlaves = 0;
 
   // set default play rate
@@ -1302,7 +1339,7 @@ void arpRun(unsigned long milliseconds)
         if(arpGateLength)
         {              
           // Set the stop period to occur after a certain
-          arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 16;
+          arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
         }
         else
         {
@@ -1390,6 +1427,8 @@ unsigned long editRevertTime;
 unsigned long editLongHoldTime;
 byte editPressType;
 
+unsigned long editTapTempoTime;
+
 ////////////////////////////////////////////////////////////////////////////////
 // INIT EDITING
 void editInit()
@@ -1398,6 +1437,7 @@ void editInit()
   editPressType = EDIT_NO_PRESS;
   editRevertTime = 1;  // force a display refresh on startup
   editLongHoldTime = 0;
+  editTapTempoTime = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1719,6 +1759,7 @@ void editTempoSynch(char keyPress, byte forceRefresh)
   {
   case 0: // Toggle MIDI synch
     synchToMIDI = !synchToMIDI;
+    eepromSet(EEPROM_SYNCH_SOURCE, synchToMIDI);    
     forceRefresh = 1;
     break;
   case 1: // Toggle MIDI clock send
@@ -1734,7 +1775,25 @@ void editTempoSynch(char keyPress, byte forceRefresh)
       synchSendMIDI = 1;
       synchRestart();
     }
+    eepromSet(EEPROM_SYNCH_SEND, synchSendMIDI);    
     forceRefresh = 1;
+    break;
+  case 3: case 4: case 5: case 6: case 7: 
+  case 8: case 9: case 10: case 11: 
+    synchSetTempo(keyPress * 20);
+    forceRefresh = 1;
+    break;
+
+  case 13: // Tap tempo
+    {
+      unsigned long ms = millis();
+      if(ms > editTapTempoTime && ms - editTapTempoTime < 1000)
+      {
+        synchSetTempo(60000L/(ms-editTapTempoTime));
+        forceRefresh = 1;            
+      }
+      editTapTempoTime = ms;
+    }
     break;
   case 14: // Manual tempo increment
     if(!synchToMIDI && synchBPM > 20)
@@ -1752,41 +1811,39 @@ void editTempoSynch(char keyPress, byte forceRefresh)
     break;
   }
 
-  // 0123456789012345
-  // MS-HTTTT-UUUU-v^
-  // TODO
   if(forceRefresh)
   {
+    uiSetLeds(0,16,LED_OFF);      
     if(synchToMIDI)
     {
-      uiSetLeds(0,16,LED_DIM);
       uiLeds[0] = LED_BRIGHT;
       uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;                                                                                                                                                                                                                                                            
-      uiLeds[2] = LED_OFF;
-      uiLeds[8] = LED_OFF;
-      uiLeds[13] = LED_OFF;
     }
     else
-    {
-      byte bpmH = synchBPM/100;
-      byte bpmT = (synchBPM % 100) / 10;
-      byte bpmU = (synchBPM % 10);
+    {    
+#define BPM_METER(x,v) \
+      ((abs(v-x) <= 4)? LED_BRIGHT : \
+      ((abs(v-x) <= 11)? LED_MEDIUM : \
+      ((abs(v-x) <= 19)? LED_DIM : LED_OFF)))
+      
       uiLeds[0] = LED_MEDIUM;
       uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;
-      uiLeds[2] = LED_OFF;
-      if(bpmH>2) uiLeds[3] = LED_BRIGHT;
-      else if(bpmH>1) uiLeds[3] = LED_MEDIUM;
-      else uiLeds[3] = LED_DIM;
-      uiLeds[4] = (!!(bpmT & 0x08))? LED_MEDIUM : LED_DIM;
-      uiLeds[5] = (!!(bpmT & 0x04))? LED_MEDIUM : LED_DIM;
-      uiLeds[6] = (!!(bpmT & 0x02))? LED_MEDIUM : LED_DIM;
-      uiLeds[7] = (!!(bpmT & 0x01))? LED_MEDIUM : LED_DIM;
-      uiLeds[8] = LED_OFF;
-      uiLeds[9] = (!!(bpmU & 0x08))? LED_MEDIUM : LED_DIM;
-      uiLeds[10] = (!!(bpmU & 0x04))? LED_MEDIUM : LED_DIM;
-      uiLeds[11] = (!!(bpmU & 0x02))? LED_MEDIUM : LED_DIM;
-      uiLeds[12] = (!!(bpmU & 0x01))? LED_MEDIUM : LED_DIM;
-      uiLeds[13] = LED_OFF;
+      if(synchBPM <= 40) 
+        uiLeds[3] = LED_DIM;
+      else
+        uiLeds[3] = BPM_METER(synchBPM,60);      
+      uiLeds[4] = BPM_METER(synchBPM,80);
+      uiLeds[5] = BPM_METER(synchBPM,100);
+      uiLeds[6] = BPM_METER(synchBPM,120);
+      uiLeds[7] = BPM_METER(synchBPM,140);
+      uiLeds[8] = BPM_METER(synchBPM,160);
+      uiLeds[9] = BPM_METER(synchBPM,180);
+      uiLeds[10] = BPM_METER(synchBPM,200);
+      if(synchBPM >= 240) 
+        uiLeds[11] = LED_DIM;
+      else
+        uiLeds[11] = BPM_METER(synchBPM,220);
+      uiLeds[13] = LED_BRIGHT;
       uiLeds[14] = LED_BRIGHT;
       uiLeds[15] = LED_BRIGHT;      
     }
@@ -1805,6 +1862,7 @@ void editMidiOutputChannel(char keyPress, byte forceRefresh)
       arpStopNote = 0;
     }
     midiSendChannel = keyPress;
+    eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     forceRefresh = 1;
   }
   if(forceRefresh)
@@ -1824,10 +1882,12 @@ void editMidiInputChannel(char keyPress, byte forceRefresh)
     if(midiReceiveChannel == keyPress)
     {
       midiReceiveChannel = MIDI_OMNI;
+      eepromSet(EEPROM_INPUT_CHAN, MIDI_OMNI);
     }
     else
     {
       midiReceiveChannel = keyPress;
+      eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
     }
     forceRefresh = 1;
   }
