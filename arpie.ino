@@ -14,6 +14,8 @@
 //    1.00  16Apr13  Baseline release
 //
 ////////////////////////////////////////////////////////////////////////////////
+#define VERSION_HI  1
+#define VERSION_LO  0
 
 //
 // INCLUDE FILES
@@ -246,6 +248,35 @@ void uiInit()
   TCCR2B = 1<<CS21 | 1<<CS20;
   TIMSK2 = 1<<TOIE2;
   TCNT2 = 0; 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SHOW FIRMWARE VERSION (BCD)
+void uiShowVersion()
+{
+  if(digitalRead(P_UI_HOLDSW) == LOW) {
+    uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? LED_BRIGHT:LED_DIM;
+    uiLeds[1] =  !!((VERSION_HI/10)&0x4) ? LED_BRIGHT:LED_DIM;
+    uiLeds[2] =  !!((VERSION_HI/10)&0x2) ? LED_BRIGHT:LED_DIM;
+    uiLeds[3] =  !!((VERSION_HI/10)&0x1) ? LED_BRIGHT:LED_DIM;
+  
+    uiLeds[4] =  !!((VERSION_HI%10)&0x8) ? LED_BRIGHT:LED_DIM;
+    uiLeds[5] =  !!((VERSION_HI%10)&0x4) ? LED_BRIGHT:LED_DIM;
+    uiLeds[6] =  !!((VERSION_HI%10)&0x2) ? LED_BRIGHT:LED_DIM;
+    uiLeds[7] =  !!((VERSION_HI%10)&0x1) ? LED_BRIGHT:LED_DIM;
+  
+    uiLeds[8] =  !!((VERSION_LO/10)&0x8) ? LED_BRIGHT:LED_DIM;
+    uiLeds[9] =  !!((VERSION_LO/10)&0x4) ? LED_BRIGHT:LED_DIM;
+    uiLeds[10] = !!((VERSION_LO/10)&0x2) ? LED_BRIGHT:LED_DIM;
+    uiLeds[11] = !!((VERSION_LO/10)&0x1) ? LED_BRIGHT:LED_DIM;
+  
+    uiLeds[12] = !!((VERSION_LO%10)&0x8) ? LED_BRIGHT:LED_DIM;
+    uiLeds[13] = !!((VERSION_LO%10)&0x4) ? LED_BRIGHT:LED_DIM;
+    uiLeds[14] = !!((VERSION_LO%10)&0x2) ? LED_BRIGHT:LED_DIM;
+    uiLeds[15] = !!((VERSION_LO%10)&0x1) ? LED_BRIGHT:LED_DIM;
+    
+    while(digitalRead(P_UI_HOLDSW) == LOW);    
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -611,20 +642,20 @@ byte synchSendEvent;                  // synch events to send
 // Values for synchRate
 enum
 {
-  SYNCH_RATE_1   = 96,
-  SYNCH_RATE_2D  = 72,
-  SYNCH_RATE_2   = 48,
-  SYNCH_RATE_4D  = 36,
-  SYNCH_RATE_4   = 24,
-  SYNCH_RATE_8D  = 18,
-  SYNCH_RATE_2T  = 16,
-  SYNCH_RATE_8   = 12,
-  SYNCH_RATE_4T  = 8,
-  SYNCH_RATE_8T  = 4,
-  SYNCH_RATE_16D = 9,
-  SYNCH_RATE_16  = 6,
-  SYNCH_RATE_32  = 3,
-  SYNCH_RATE_16T = 2
+  SYNCH_RATE_1    = 96,
+  SYNCH_RATE_2D   = 72,
+  SYNCH_RATE_2    = 48,
+  SYNCH_RATE_4D   = 36,
+  SYNCH_RATE_2T   = 32,  
+  SYNCH_RATE_4    = 24,
+  SYNCH_RATE_8D   = 18,
+  SYNCH_RATE_4T   = 16,
+  SYNCH_RATE_8    = 12,
+  SYNCH_RATE_16D  = 9,
+  SYNCH_RATE_8T   = 8,
+  SYNCH_RATE_16   = 6,
+  SYNCH_RATE_16T  = 4,
+  SYNCH_RATE_32   = 3
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1556,16 +1587,17 @@ void editRate(char keyPress, byte forceRefresh)
     SYNCH_RATE_2D,
     SYNCH_RATE_2,
     SYNCH_RATE_4D,
+    SYNCH_RATE_2T,
     SYNCH_RATE_4,
     SYNCH_RATE_8D,
-    SYNCH_RATE_2T,
-    SYNCH_RATE_8,
     SYNCH_RATE_4T,
-    SYNCH_RATE_8T,
+    SYNCH_RATE_8,
     SYNCH_RATE_16D,
+    SYNCH_RATE_8T,
     SYNCH_RATE_16,
-    SYNCH_RATE_32,
-    SYNCH_RATE_16T  };
+    SYNCH_RATE_16T,
+    SYNCH_RATE_32
+  };    
 
   if(keyPress >= 0 && keyPress < 14)
   {
@@ -1576,12 +1608,13 @@ void editRate(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 14, LED_DIM);
+    uiSetLeds(0, 13, LED_DIM);
     uiLeds[0] = LED_MEDIUM;
     uiLeds[2] = LED_MEDIUM;
-    uiLeds[7] = LED_MEDIUM;
+    uiLeds[5] = LED_MEDIUM;
+    uiLeds[8] = LED_MEDIUM;
     uiLeds[11] = LED_MEDIUM;
-    uiLeds[12] = LED_MEDIUM;
+    uiLeds[13] = LED_MEDIUM;
     for(int i=0; i<14; ++i)
     {
       if(synchPlayRate == rates[i]) 
@@ -2089,8 +2122,11 @@ void setup() {
   // start up the refresh interrupt
   cli();
   synchInit();
-  uiInit();
+  uiInit();     
   sei();  
+
+  // pressing hold switch at startup shows UI version
+  uiShowVersion();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
