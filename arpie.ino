@@ -1,13 +1,26 @@
+////////////////////////////////////////////////////////////////////////////////
+//  
+//    ------------------------------------------
+//     AAAAA    RRRRRR    PPPPPP    II   EEEEEEE
+//    AA   AA   RR   RR   PP   PP   II   EE
+//    AAAAAAA   RRRRRR    PPPPPP    II   EEEE
+//    AA   AA   RR   RR   PP        II   EE
+//    AA   AA   RR   RR   PP        II   EEEEEEE
+//    ------------------------------------------
+//    MONOPHONIC MIDI ARPEGGIATOR
+//    hotchk155/2013
+//
+//    Revision History   
+//    1.00  16Apr13  Baseline release
+//
+////////////////////////////////////////////////////////////////////////////////
+
 //
 // INCLUDE FILES
 //
 #include <avr/interrupt.h>  
 #include <avr/io.h>
 #include <EEPROM.h>
-
-byte qq;
-#define FLASH_HOLD { digitalWrite(P_UI_HOLD_LED,qq); qq=!qq; }
-
   
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -28,11 +41,11 @@ byte qq;
 #define P_UI_OUT_LED     17
 #define P_UI_HOLD_LED     9
 
-#define P_UI_CLK     5 //PD5
-#define P_UI_DATA    7 //PD7
-#define P_UI_STROBE  15 //PC1
-#define P_UI_READ1   10 //PB2
-#define P_UI_READ0   6 //PD6
+#define P_UI_CLK     5   //PD5
+#define P_UI_DATA    7   //PD7
+#define P_UI_STROBE  15  //PC1
+#define P_UI_READ1   10  //PB2
+#define P_UI_READ0   6   //PD6
 
 #define DBIT_UI_CLK     0b00100000  // D5
 #define DBIT_UI_DATA    0b10000000  // D7
@@ -45,7 +58,7 @@ byte qq;
 #define DEBOUNCE_COUNT 50
 
 #define LED_BRIGHT 255
-#define LED_MEDIUM 25//16
+#define LED_MEDIUM 25
 #define LED_DIM 1
 #define LED_OFF 0
 
@@ -53,10 +66,7 @@ byte qq;
 #define UI_OUT_LED_TIME    20
 #define UI_SYNCH_LED_TIME  5
 
-// The array of LED states
 volatile byte uiLeds[16];
-
-// Variables used for updating the display
 volatile char uiDataKey;
 volatile char uiLastDataKey;
 volatile char uiMenuKey;
@@ -187,13 +197,10 @@ ISR(TIMER2_OVF_vect)
       uiLastMenuKey = NO_VALUE;
     }
 
-
-
     if(!uiScanPosition)
       uiScanPosition = 15;
     else
       --uiScanPosition;
-
 
     TCNT2 = 255 - ledOnPeriod;
   }
@@ -233,6 +240,7 @@ void uiInit()
   uiHoldSwitchStatus = 0;
   uiDebounceHold = 0;
   uiHoldEnabled = 0;
+  
   // start the interrupt to service the UI   
   TCCR2A = 0;
   TCCR2B = 1<<CS21 | 1<<CS20;
@@ -340,10 +348,16 @@ enum {
   EEPROM_SYNCH_SOURCE,
   EEPROM_SYNCH_SEND
 };
+
+////////////////////////////////////////////////////////////////////////////////
+// SET A VALUE IN EEPROM
 void eepromSet(byte which, byte value)
 {
   EEPROM.write(which, value);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// GET A VALUE FROM EEPROM
 byte eepromGet(byte which, byte minValue, byte maxValue, byte defaultValue)
 {
   byte value = EEPROM.read(which);
@@ -386,7 +400,6 @@ byte midiReceiveChannel;
 #define MIDI_IS_NOTE_OFF(msg) ((msg & 0xf0) == 0x80)
 #define MIDI_MK_NOTE (0x90 | midiSendChannel)
 
-
 // realtime synch messages
 #define MIDI_SYNCH_TICK     0xf8
 #define MIDI_SYNCH_START    0xfa
@@ -415,7 +428,6 @@ void midiInit()
 // MIDI WRITE
 void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsigned long milliseconds)
 {
-// TODO: sysex passthru should set running status?
   if((statusByte & 0xf0) == 0xf0)
   {
     // realtime byte pass straight through
@@ -439,11 +451,11 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
   uiFlashOutLED(milliseconds);
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// MIDI READ
 byte midiRead(unsigned long milliseconds, byte passThru)
 {
   extern byte synchToMIDI;
-  byte receiveMask1 = 0x80|midiReceiveChannel;
-  byte receiveMask2 = 0x90|midiReceiveChannel;
   
   // loop while we have incoming MIDI serial data
   while(Serial.available())
@@ -944,7 +956,6 @@ void arpRandomizeChord(int *dest)
     }        
   }
 }
-
   
 ////////////////////////////////////////////////////////////////////////////////
 // BUILD A NEW SEQUENCE
@@ -1151,13 +1162,8 @@ void arpBuildSequence()
   }
 }  
 
-
-
 ////////////////////////////////////////////////////////////////////////////////
-// 
 // READ THE MIDI INPUT AND UPDATE THE CHORD BUFFER
-// 
-////////////////////////////////////////////////////////////////////////////////
 void arpReadInput(unsigned long milliseconds)
 {
   int i;
@@ -1272,25 +1278,12 @@ void arpReadInput(unsigned long milliseconds)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-//
-// ARP RUN
-// Run the arpeggiator state machine
-// 
-////////////////////////////////////////////////////////////////////////////////
+// RUN ARPEGGIATOR
 void arpRun(unsigned long milliseconds)
 {  
-  // if the arpeggiator is enabled
-  if(1) //uiReadEnableSwitch())
-  {
-    // update the chord based on user input
-    arpReadInput(milliseconds);
-  }
-  else
-  {
-    // just pass through channel messages
-    midiRead(milliseconds, 1);
-  }
-
+  // update the chord based on user input
+  arpReadInput(milliseconds);
+  
   // see if user has changed a setting that would mean the
   // sequence needs to be rebuilt
   if(arpRebuild)
@@ -1313,42 +1306,38 @@ void arpRun(unsigned long milliseconds)
     // and the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
 
-    // check if we should be sending notes
-    if(1) //uiReadEnableSwitch())
-    {            
-      // check there is a note not a rest at this 
-      // point in the pattern
-      if(arpPattern[arpPatternIndex])
+    // check there is a note not a rest at this 
+    // point in the pattern
+    if(arpPattern[arpPatternIndex])
+    {
+      byte note = ARP_GET_NOTE(arpSequence[sequenceIndex]);
+      byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[sequenceIndex]);        
+
+      // start the note playing
+      if(note > 0)
+        midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);
+
+      // if the previous note is still playing then stop it
+      // (should be the case only for "tie" mode)
+      if(arpStopNote && arpStopNote != note)
       {
-        byte note = ARP_GET_NOTE(arpSequence[sequenceIndex]);
-        byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[sequenceIndex]);        
-
-        // start the note playing
-        if(note > 0)
-          midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);
-
-        // if the previous note is still playing then stop it
-        // (should be the case only for "tie" mode)
-        if(arpStopNote && arpStopNote != note)
-        {
-          midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
-        }
-
-        // need to work out the gate length for this note
-        arpStopNote = note;
-        if(arpGateLength)
-        {              
-          // Set the stop period to occur after a certain
-          arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
-        }
-        else
-        {
-          // note till play till the next one starts
-          arpStopNoteTime = 0;               
-        }
-        arpLastPlayAdvance = milliseconds;
+        midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
       }
-    }    
+
+      // need to work out the gate length for this note
+      arpStopNote = note;
+      if(arpGateLength)
+      {              
+        // Set the stop period to occur after a certain
+        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
+      }
+      else
+      {
+        // note till play till the next one starts
+        arpStopNoteTime = 0;               
+      }
+      arpLastPlayAdvance = milliseconds;
+    }
 
     // need to update the arp display
     arpRefresh = 1;
@@ -1510,7 +1499,6 @@ void editArpType(char keyPress, byte forceRefresh)
       break;
   } 
   
-
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2105,6 +2093,13 @@ void setup() {
   sei();  
 }
 
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+// LOOP
+//
+//
+////////////////////////////////////////////////////////////////////////////////
 void loop() 
 {
   unsigned long millseconds = millis();
@@ -2116,5 +2111,4 @@ void loop()
   editRun(millseconds);   
 }
 
-
-
+//EOF
