@@ -11,11 +11,12 @@
 //    hotchk155/2013
 //
 //    Revision History   
-//    1.00  16Apr13  Baseline release
+//    1.00  16Apr13  Baseline 
+//    1.01  21Apr13  Improvements for MIDI thru control
 //
 ////////////////////////////////////////////////////////////////////////////////
 #define VERSION_HI  1
-#define VERSION_LO  0
+#define VERSION_LO  1
 
 //
 // INCLUDE FILES
@@ -377,7 +378,8 @@ enum {
   EEPROM_INPUT_CHAN = 100,
   EEPROM_OUTPUT_CHAN,
   EEPROM_SYNCH_SOURCE,
-  EEPROM_SYNCH_SEND
+  EEPROM_SYNCH_SEND,
+  EEPROM_PASSTHRU
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -425,6 +427,13 @@ byte midiParams[2];
 char midiParamIndex;
 byte midiSendChannel;
 byte midiReceiveChannel;
+byte midiPassThruInput;
+
+// midi pasthru input modes
+#define MIDI_PASSTHRU_NONE  0x00
+#define MIDI_PASSTHRU_NOTES 0x01
+#define MIDI_PASSTHRU_OTHER 0x02
+#define MIDI_PASSTHRU_ALL   0x03
 
 // macros
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
@@ -453,6 +462,8 @@ void midiInit()
   midiParamIndex = 0;
   midiSendChannel = eepromGet(EEPROM_OUTPUT_CHAN, 0, 15, 0);
   midiReceiveChannel = eepromGet(EEPROM_INPUT_CHAN, 0, 15, MIDI_OMNI);
+  midiPassThruInput = eepromGet(EEPROM_PASSTHRU, 0, 3, MIDI_PASSTHRU_NONE);
+  
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -547,14 +558,18 @@ byte midiRead(unsigned long milliseconds, byte passThru)
         
         // is it a channel message for our channel?
         if(MIDI_OMNI == midiReceiveChannel ||
-          (midiInRunningStatus & midiReceiveChannel) == midiReceiveChannel)
+          (midiInRunningStatus & 0x0F) == midiReceiveChannel)
         {
           switch(midiInRunningStatus & 0xF0)
           {
             case 0x80: // note off
             case 0x90: // note on
+              if(!!(midiPassThruInput & MIDI_PASSTHRU_NOTES))
+                midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                
               return midiInRunningStatus; // return to the arp engine
             default:
+              if(!!(midiPassThruInput & MIDI_PASSTHRU_OTHER)) 
+                  midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
               // send to the new channel
               midiWrite((midiInRunningStatus & 0xF0)|midiSendChannel, midiParams[0], midiParams[1], midiNumParams, milliseconds);
           }
@@ -1693,6 +1708,30 @@ void editGateLength(char keyPress, byte forceRefresh)
 }
 
 /////////////////////////////////////////////////////
+// EDIT PASSTHRU
+void editPassThruInput(char keyPress, byte forceRefresh)
+{
+  if(0 == keyPress)
+  {    
+    midiPassThruInput ^= 1;
+    eepromSet(EEPROM_PASSTHRU, midiPassThruInput);    
+    forceRefresh = 1;
+  }
+  else if(1 == keyPress)
+  {    
+    midiPassThruInput ^= 2;
+    eepromSet(EEPROM_PASSTHRU, midiPassThruInput);    
+    forceRefresh = 1;
+  }
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiLeds[0] = !!(midiPassThruInput&1)? LED_BRIGHT : LED_DIM;
+    uiLeds[1] = !!(midiPassThruInput&2)? LED_BRIGHT : LED_DIM;
+  }    
+}
+
+/////////////////////////////////////////////////////
 // EDIT NOTE INSERT MODE
 void editInsertMode(char keyPress, byte forceRefresh)
 {
@@ -2042,10 +2081,16 @@ void editRun(unsigned long milliseconds)
     editVelocity(dataKeyPress, forceRefresh, arpVelocityMode);
     break;    
   case EDIT_MODE_GATE_LENGTH:
-    editGateLength(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_HOLD == editPressType)
+      editPassThruInput(dataKeyPress, forceRefresh);
+    else
+      editGateLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_INSERT:
-    editInsertMode(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_PRESS == editPressType)
+      midiPanic();
+    else
+      editInsertMode(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TEMPO_SYNCH:
     editTempoSynch(dataKeyPress, forceRefresh);
@@ -2057,10 +2102,7 @@ void editRun(unsigned long milliseconds)
       editMidiOutputChannel(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TRANSPOSE:
-    if(EDIT_LONG_PRESS == editPressType)
-      midiPanic();
-    else
-      editTranspose(dataKeyPress, forceRefresh);
+    editTranspose(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_PATTERN:
   default:
