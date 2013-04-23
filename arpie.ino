@@ -60,6 +60,9 @@
 #define NO_VALUE (-1)
 #define DEBOUNCE_COUNT 50
 
+// Time in ms that counts as a long button press
+#define UI_LONG_HOLD_TIME 1500
+
 #define LED_BRIGHT 255
 #define LED_MEDIUM 25
 #define LED_DIM 1
@@ -69,6 +72,11 @@
 #define UI_OUT_LED_TIME    20
 #define UI_SYNCH_LED_TIME  5
 
+#define UI_HOLD_PRESSED  0x01
+#define UI_HOLD_HELD     0x02
+#define UI_HOLD_CHORD    0x04
+#define UI_HOLD_LOCKED   0x08
+
 volatile byte uiLeds[16];
 volatile char uiDataKey;
 volatile char uiLastDataKey;
@@ -77,13 +85,13 @@ volatile char uiLastMenuKey;
 volatile byte uiDebounce;
 volatile byte uiScanPosition;
 volatile byte uiLedOffPeriod;
+volatile byte uiFlashHold;
 
 unsigned long uiUnflashInLED;
 unsigned long uiUnflashOutLED;
 unsigned long uiUnflashSynchLED;
-byte uiHoldEnabled;
-byte uiHoldSwitchStatus;
-unsigned long uiDebounceHold;
+byte uiHoldType;
+unsigned long uiHoldPressedTime;
 #define UI_DEBOUNCE_MS 100
 
 // Enumerate the menu keys
@@ -112,7 +120,7 @@ enum {
 //
 ////////////////////////////////////////////////////////////////////////////////
 ISR(TIMER2_OVF_vect) 
-{
+{  
   // turn off LED strobe
   PORTC &= ~CBIT_UI_STROBE;
 
@@ -126,6 +134,8 @@ ISR(TIMER2_OVF_vect)
   }
   else
   {
+    ++uiFlashHold;
+    
     // need to start scanning from the start of the led row again?
     if(uiScanPosition >= 15)
     {
@@ -240,9 +250,9 @@ void uiInit()
   uiUnflashInLED = 0;
   uiUnflashOutLED = 0;
   uiUnflashSynchLED = 0;
-  uiHoldSwitchStatus = 0;
-  uiDebounceHold = 0;
-  uiHoldEnabled = 0;
+  uiHoldPressedTime = 0;
+  uiHoldType = 0;
+  uiFlashHold = 0;
   
   // start the interrupt to service the UI   
   TCCR2A = 0;
@@ -339,27 +349,51 @@ void uiRun(unsigned long milliseconds)
     digitalWrite(P_UI_SYNCH_LED, LOW);
     uiUnflashSynchLED = 0;
   }
-  
-  // run the debounce
-  if(uiDebounceHold)
+
+  // Hold button logic  
+  if(milliseconds < uiHoldPressedTime + UI_DEBOUNCE_MS)
   {
-    if(uiDebounceHold < milliseconds)
-      uiDebounceHold = 0;
-  }
-  else if(!digitalRead(P_UI_HOLDSW))
-  {
-    if(!uiHoldSwitchStatus)
-    {
-      uiHoldSwitchStatus = 1;
-      uiHoldEnabled = !uiHoldEnabled;
-      digitalWrite(P_UI_HOLD_LED, uiHoldEnabled);
-    }
-    uiDebounceHold = milliseconds + UI_DEBOUNCE_MS;
+    // debouncing... ignore everything
   }
   else
+  if(!digitalRead(P_UI_HOLDSW))
   {
-    uiHoldSwitchStatus = 0;
-  }
+    // button pressed... new press?
+    if(!(uiHoldType & UI_HOLD_PRESSED))
+    {
+      // record and debounce it
+      uiHoldType |= UI_HOLD_PRESSED;
+      uiHoldPressedTime = milliseconds;
+    }
+    else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + UI_LONG_HOLD_TIME))
+    {
+      // record a long hold and set LOCK flag
+      uiHoldType |= UI_HOLD_HELD;          
+      uiHoldType |= UI_HOLD_LOCKED;          
+      uiFlashHold = 0;
+    }
+  }  
+  else
+  if(!!(uiHoldType & UI_HOLD_PRESSED))
+  {
+    if(!(uiHoldType & UI_HOLD_HELD))
+    {
+      // release after short hold clears lock flag
+      // and toggles hold
+      if(!!(uiHoldType & UI_HOLD_LOCKED))
+        uiHoldType &= ~UI_HOLD_LOCKED;
+      else
+        uiHoldType ^= UI_HOLD_CHORD;
+    }
+    uiHoldType &= ~UI_HOLD_PRESSED;
+    uiHoldType &= ~UI_HOLD_HELD;
+    uiHoldPressedTime = milliseconds;
+  }    
+    
+  if(uiHoldType & UI_HOLD_LOCKED)
+    digitalWrite(P_UI_HOLD_LED, !uiFlashHold);
+  else
+    digitalWrite(P_UI_HOLD_LED, !!(uiHoldType & UI_HOLD_CHORD));   
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1225,7 +1259,7 @@ void arpReadInput(unsigned long milliseconds)
   {
     // read the MIDI port
     byte msg = midiRead(milliseconds, 0);      
-    if(!msg)
+    if(!msg || !!(uiHoldType & UI_HOLD_LOCKED))
       break;
     byte note = midiParams[0];
     byte velocity = midiParams[1];
@@ -1262,7 +1296,7 @@ void arpReadInput(unsigned long milliseconds)
         if(!arpNotesHeld)
         {
           arpChordLength = 0;
-          if(uiHoldEnabled)
+          if(!!(uiHoldType & UI_HOLD_CHORD))
             synchRestartSequenceOnNextBeat = 1;
           else
             synchRestart();
@@ -1304,7 +1338,7 @@ void arpReadInput(unsigned long milliseconds)
       }
       
       // should the note be removed from the chord?
-      if(!uiHoldEnabled && noteIndexInChord >= 0)
+      if(!(uiHoldType & UI_HOLD_CHORD) && noteIndexInChord >= 0)
       {     
         
         // shift higher notes down one position
@@ -1321,7 +1355,7 @@ void arpReadInput(unsigned long milliseconds)
    
   // check if the hold switch is released while
   // there are notes being held
-  if(!uiHoldEnabled && !arpNotesHeld && arpChordLength)
+  if(!(uiHoldType & UI_HOLD_CHORD) && !arpNotesHeld && arpChordLength)
   {
     arpChordLength = 0;
     arpRebuild = 1;
@@ -1446,9 +1480,6 @@ enum {
 // Time in ms when we go back to pattern
 // edit mode after last button press
 #define EDIT_REVERT_TIME 10000
-
-// Time in ms that counts as a long button press
-#define EDIT_LONG_HOLD_TIME 2000
 
 enum {
   EDIT_NO_PRESS = 0,
@@ -2042,7 +2073,7 @@ void editRun(unsigned long milliseconds)
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
     {
-      editLongHoldTime = milliseconds + EDIT_LONG_HOLD_TIME;
+      editLongHoldTime = milliseconds + UI_LONG_HOLD_TIME;
     }
     else if(milliseconds > editLongHoldTime)
     {
