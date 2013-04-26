@@ -13,10 +13,11 @@
 //    Revision History   
 //    1.00  16Apr13  Baseline 
 //    1.01  21Apr13  Improvements for MIDI thru control
+//    1.02  26Apr13  Synch source/input lockout options
 //
 ////////////////////////////////////////////////////////////////////////////////
 #define VERSION_HI  1
-#define VERSION_LO  1
+#define VERSION_LO  2
 
 //
 // INCLUDE FILES
