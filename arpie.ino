@@ -465,13 +465,14 @@ byte midiReceiveChannel;
 byte midiOptions;
 
 // midi options
-#define MIDI_OPTS_PASS_INPUT_NOTES 0x01
-#define MIDI_OPTS_PASS_INPUT_CHMSG 0x02
-#define MIDI_OPTS_SYNCH_INPUT      0x04
-#define MIDI_OPTS_SYNCH_AUX        0x08
+#define MIDI_OPTS_SEND_CHMSG       0x01
+#define MIDI_OPTS_PASS_INPUT_NOTES 0x02
+#define MIDI_OPTS_PASS_INPUT_CHMSG 0x04
+#define MIDI_OPTS_SYNCH_INPUT      0x08
+#define MIDI_OPTS_SYNCH_AUX        0x10
 
-#define MIDI_OPTS_MAX_VALUE        0x0F
-#define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
+#define MIDI_OPTS_MAX_VALUE        0x1F
+#define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
 
 // macros
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
@@ -607,9 +608,10 @@ byte midiRead(unsigned long milliseconds, byte passThru)
               return midiInRunningStatus; // return to the arp engine
             default:
               if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_CHMSG))
-                  midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
+                 midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
               // send to the new channel
-              midiWrite((midiInRunningStatus & 0xF0)|midiSendChannel, midiParams[0], midiParams[1], midiNumParams, milliseconds);
+              if(!!(midiOptions & MIDI_OPTS_SEND_CHMSG))
+                 midiWrite((midiInRunningStatus & 0xF0)|midiSendChannel, midiParams[0], midiParams[1], midiNumParams, milliseconds);
           }
         }
         else
@@ -669,8 +671,8 @@ unsigned long synchPlayIndex;         // arp note count
 byte synchPlayAdvance;                // flag to indicate that next arp note can be played
 byte synchRestartSequenceOnNextBeat;  // restart play index flag
 int synchBPM;                         // internal synch bpm
-int synchInternalTickPeriod;          // internal synch millseconds per tick
-unsigned long synchNextInternalTick;  // internal synch next tick time
+float synchInternalTickPeriod;        // internal synch millseconds per tick
+float synchNextInternalTick;          // internal synch next tick time
 
 unsigned long synchLastStepTime;      // the last step time
 unsigned long synchStepPeriod;          // period between steps
@@ -846,7 +848,9 @@ void synchRun(unsigned long milliseconds)
     else if(synchNextInternalTick < milliseconds)
     {
       synchTick(synchSendMIDI);
-      synchNextInternalTick = milliseconds + synchInternalTickPeriod;
+      synchNextInternalTick += synchInternalTickPeriod;
+      if(synchNextInternalTick < milliseconds)
+        synchNextInternalTick = milliseconds + synchInternalTickPeriod;
     }
   }
 
@@ -1756,23 +1760,29 @@ void editMidiOptions(char keyPress, byte forceRefresh)
 {
   if(0 == keyPress)
   {    
-    midiOptions ^= MIDI_OPTS_PASS_INPUT_NOTES;
+    midiOptions ^= MIDI_OPTS_SEND_CHMSG;
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
   else if(1 == keyPress)
   {    
-    midiOptions ^= MIDI_OPTS_PASS_INPUT_CHMSG;
+    midiOptions ^= MIDI_OPTS_PASS_INPUT_NOTES;
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
   else if(2 == keyPress)
   {    
-    midiOptions ^= MIDI_OPTS_SYNCH_INPUT;
+    midiOptions ^= MIDI_OPTS_PASS_INPUT_CHMSG;
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
   else if(3 == keyPress)
+  {    
+    midiOptions ^= MIDI_OPTS_SYNCH_INPUT;
+    eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
+    forceRefresh = 1;
+  }
+  else if(4 == keyPress)
   {    
     midiOptions ^= MIDI_OPTS_SYNCH_AUX;
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
@@ -1781,10 +1791,11 @@ void editMidiOptions(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiLeds[0] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? LED_BRIGHT : LED_DIM;
-    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? LED_BRIGHT : LED_DIM;
-    uiLeds[2] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? LED_BRIGHT : LED_DIM;
-    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? LED_BRIGHT : LED_DIM;
+    uiLeds[0] = !!(midiOptions&MIDI_OPTS_SEND_CHMSG)? LED_BRIGHT : LED_DIM;
+    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? LED_BRIGHT : LED_DIM;
+    uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? LED_BRIGHT : LED_DIM;
+    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? LED_BRIGHT : LED_DIM;
+    uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? LED_BRIGHT : LED_DIM;
   }    
 }
 
@@ -2143,7 +2154,10 @@ void editRun(unsigned long milliseconds)
     break;    
   case EDIT_MODE_INSERT:
     if(EDIT_LONG_PRESS == editPressType)
+    {
+      arpClear();
       midiPanic();
+    }
     else
       editInsertMode(dataKeyPress, forceRefresh);
     break;    
