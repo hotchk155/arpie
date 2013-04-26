@@ -983,6 +983,14 @@ void arpInit()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// CLEAR CHORD
+void arpClear()
+{
+    arpChordLength = 0;
+    arpRebuild = 1;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // COPY CHORD
 void arpCopyChord(int *dest)
 {
@@ -1357,11 +1365,9 @@ void arpReadInput(unsigned long milliseconds)
   // check if the hold switch is released while
   // there are notes being held
   if(!(uiHoldType & UI_HOLD_CHORD) && !arpNotesHeld && arpChordLength)
-  {
-    arpChordLength = 0;
-    arpRebuild = 1;
-  }
+    arpClear();
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // RUN ARPEGGIATOR
@@ -2001,6 +2007,7 @@ void editMidiInputChannel(char keyPress, byte forceRefresh)
       eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
     }
     forceRefresh = 1;
+    arpClear();
   }
   if(forceRefresh)
   {
