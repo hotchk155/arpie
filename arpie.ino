@@ -14,10 +14,11 @@
 //    1.00  16Apr13  Baseline 
 //    1.01  21Apr13  Improvements for MIDI thru control
 //    1.02  26Apr13  Synch source/input lockout options
+//    1.03  12May13  Fix issue with synch thru/change lockout blink rate
 //
 ////////////////////////////////////////////////////////////////////////////////
 #define VERSION_HI  1
-#define VERSION_LO  2
+#define VERSION_LO  3
 
 //
 // INCLUDE FILES
@@ -134,8 +135,9 @@ ISR(TIMER2_OVF_vect)
     uiLedOffPeriod = 0;
   }
   else
-  {
-    ++uiFlashHold;
+  {         
+    // used to flash hold light
+    ++uiFlashHold;  
     
     // need to start scanning from the start of the led row again?
     if(uiScanPosition >= 15)
@@ -217,7 +219,7 @@ ISR(TIMER2_OVF_vect)
       --uiScanPosition;
 
     TCNT2 = 255 - ledOnPeriod;
-  }
+  }  
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -392,7 +394,7 @@ void uiRun(unsigned long milliseconds)
   }    
     
   if(uiHoldType & UI_HOLD_LOCKED)
-    digitalWrite(P_UI_HOLD_LED, !uiFlashHold);
+    digitalWrite(P_UI_HOLD_LED, !!(uiFlashHold & 0x80));
   else
     digitalWrite(P_UI_HOLD_LED, !!(uiHoldType & UI_HOLD_CHORD));   
 }
@@ -547,8 +549,6 @@ byte midiRead(unsigned long milliseconds, byte passThru)
     // REALTIME MESSAGE
     if((ch & 0xf0) == 0xf0)
     {
-      // all realtime messages are sent to MIDI thru
-      Serial.write(ch);
       switch(ch)
       {
           case MIDI_SYNCH_TICK:
@@ -2242,6 +2242,7 @@ void setup() {
   // pressing hold switch at startup shows UI version
   uiShowVersion();
   
+  // reset default EEPROM settings
   if(uiMenuKey == UI_KEY_C1)
   {
     midiSendChannel = 0;
