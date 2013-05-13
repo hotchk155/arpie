@@ -553,7 +553,7 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       {
           case MIDI_SYNCH_TICK:
             if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
-              synchTick(0);
+              synchTick();
             break;            
           case MIDI_SYNCH_START:
             if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
@@ -715,7 +715,7 @@ enum
 
 //////////////////////////////////////////////////////////////////////////
 // SYNCH TICK
-void synchTick(byte sendToMIDI)
+void synchTick()
 {
   ++synchTickCount;
   if(!(synchTickCount % synchPlayRate))
@@ -743,7 +743,7 @@ void synchTick(byte sendToMIDI)
   if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
     synchBeat = 1;  
     
-  if(sendToMIDI)
+  if(synchSendMIDI)
   {
     synchSendEvent |= SYNCH_SEND_TICK;
   }
@@ -759,6 +759,10 @@ void synchRestart()
   synchPlayAdvance = 1;
   synchRestartSequenceOnNextBeat = 0;
   synchBeat = 1;  
+  if(synchSendMIDI)
+  {
+    synchSendEvent |= SYNCH_SEND_START;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -782,7 +786,7 @@ ISR(synchReset_ISR)
 ISR(synchTick_ISR)
 {
   if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))     
-    synchTick(synchSendMIDI);
+    synchTick();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -847,7 +851,7 @@ void synchRun(unsigned long milliseconds)
     // need to generate our own ticks
     else if(synchNextInternalTick < milliseconds)
     {
-      synchTick(synchSendMIDI);
+      synchTick();
       synchNextInternalTick += synchInternalTickPeriod;
       if(synchNextInternalTick < milliseconds)
         synchNextInternalTick = milliseconds + synchInternalTickPeriod;
