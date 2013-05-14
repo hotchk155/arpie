@@ -662,24 +662,25 @@ void midiClearRunningStatus()
 ////////////////////////////////////////////////////////////////////////////////
 
 // variables
-byte synchToMIDI;                     // whether we're synching to MIDI
-byte synchSendMIDI;                   // whether the MIDI clock is to be sent
-byte synchSynchroniseSlaves;          // flag to say if a resynch is needed with synch slaves
-unsigned long synchTickCount;         // tick count
-int synchPlayRate;                    // ratio of ticks per arp note
-unsigned long synchPlayIndex;         // arp note count
-byte synchPlayAdvance;                // flag to indicate that next arp note can be played
-byte synchRestartSequenceOnNextBeat;  // restart play index flag
-int synchBPM;                         // internal synch bpm
-float synchInternalTickPeriod;        // internal synch millseconds per tick
-float synchNextInternalTick;          // internal synch next tick time
+volatile byte synchToMIDI;                     // whether we're synching to MIDI
+volatile byte synchSendMIDI;                   // whether the MIDI clock is to be sent
+volatile byte synchSynchroniseSlaves;          // flag to say if a resynch is needed with synch slaves
+volatile unsigned long synchTickCount;         // tick count
+volatile int synchPlayRate;                    // ratio of ticks per arp note
+volatile unsigned long synchPlayIndex;         // arp note count
+volatile byte synchPlayAdvance;                // flag to indicate that next arp note can be played
+volatile byte synchRestartSequenceOnNextBeat;  // restart play index flag
+volatile int synchBPM;                         // internal synch bpm
+volatile float synchInternalTickPeriod;        // internal synch millseconds per tick
+volatile float synchNextInternalTick;          // internal synch next tick time
 
-unsigned long synchLastStepTime;      // the last step time
-unsigned long synchStepPeriod;          // period between steps
+volatile unsigned long synchLastStepTime;      // the last step time
+volatile unsigned long synchStepPeriod;          // period between steps
 
 
-byte synchBeat;                       // flag for flashing the SYNCH lamp
-byte synchSendEvent;                  // synch events to send
+volatile byte synchBeat;                       // flag for flashing the SYNCH lamp
+volatile byte synchSendEvent;                  // synch events to send
+volatile char synchTicksToSend;                // ticks to send
 
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
 #define P_SYNCH_TICK     2
@@ -690,7 +691,7 @@ byte synchSendEvent;                  // synch events to send
 #define TICKS_PER_QUARTER_NOTE 24
 #define SYNCH_DEFAULT_BPM 120
 
-#define SYNCH_SEND_TICK  0x01
+//#define SYNCH_SEND_TICK  0x01
 #define SYNCH_SEND_START 0x02
 #define SYNCH_SEND_STOP  0x04
 
@@ -744,9 +745,7 @@ void synchTick()
     synchBeat = 1;  
     
   if(synchSendMIDI)
-  {
-    synchSendEvent |= SYNCH_SEND_TICK;
-  }
+    synchTicksToSend++;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -758,6 +757,8 @@ void synchRestart()
   synchPlayIndex = 0;
   synchPlayAdvance = 1;
   synchRestartSequenceOnNextBeat = 0;
+  synchTicksToSend = 0;
+  synchSendEvent = 0;
   synchBeat = 1;  
   if(synchSendMIDI)
   {
@@ -807,7 +808,9 @@ void synchInit()
   // by default do not send synch
   synchSendMIDI = eepromGet(EEPROM_SYNCH_SEND,0,1,0);
   synchSynchroniseSlaves = 0;
-
+  synchTicksToSend = 0;
+  synchSendEvent = 0;
+  
   // set default play rate
   synchPlayRate = SYNCH_RATE_16;
 
@@ -862,18 +865,21 @@ void synchRun(unsigned long milliseconds)
   if(synchSendEvent & SYNCH_SEND_STOP)
   {
     midiSendRealTime(MIDI_SYNCH_STOP);
+    synchTicksToSend = 0;
   }
   else
   {
     // start?
     if(synchSendEvent & SYNCH_SEND_START)
       midiSendRealTime(MIDI_SYNCH_START);
-      
-    // tick?
-    if(synchSendEvent & SYNCH_SEND_TICK)
-      midiSendRealTime(MIDI_SYNCH_TICK);
-  }
+  }  
   synchSendEvent = 0;
+  
+  if(synchTicksToSend>0)
+  {
+    synchTicksToSend--;
+    midiSendRealTime(MIDI_SYNCH_TICK);
+  }
 
   // check if we need to report a beat
   if(synchBeat)
