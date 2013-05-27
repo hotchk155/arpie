@@ -1,1 +1,0 @@
-- No need to resynch when SEND is pressed if SOURCE is external
