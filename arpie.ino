@@ -642,7 +642,7 @@ void midiPanic()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// CLEAR RUUNNING STATUS
+// CLEAR RUNNING STATUS
 void midiClearRunningStatus()
 {
    midiOutRunningStatus = 0;
