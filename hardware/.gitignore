@@ -31,6 +31,9 @@
 *.GTP
 *.GTS
 *.TXT
+*.gm1
+*.gbp
+*.zip
 
 
 
@@ -45,5 +48,3 @@ Thumbs.db
 Desktop.ini
 
 
-*.zip
-*.tmp
