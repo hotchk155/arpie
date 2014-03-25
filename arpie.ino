@@ -67,7 +67,7 @@
 
 #define LED_BRIGHT 255
 #define LED_MEDIUM 25
-#define LED_DIM 1
+#define LED_DIM 4 
 #define LED_OFF 0
 
 #define UI_IN_LED_TIME     20
