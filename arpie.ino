@@ -232,14 +232,14 @@ void uiInit()
   pinMode(P_UI_READ0, INPUT);     
   pinMode(P_UI_STROBE, OUTPUT);     
 
-  pinMode(P_UI_HOLDSW, INPUT);
+  pinMode(P_UI_HOLDSW, INPUT_PULLUP);
   pinMode(P_UI_IN_LED, OUTPUT);
   pinMode(P_UI_OUT_LED, OUTPUT);
   pinMode(P_UI_SYNCH_LED, OUTPUT);
   pinMode(P_UI_HOLD_LED, OUTPUT);
 
   // enable pullups
-  digitalWrite(P_UI_HOLDSW, HIGH);
+  //digitalWrite(P_UI_HOLDSW, HIGH);
 
   for(int i=0;i<16;++i)
     uiLeds[i] = LED_OFF;  
@@ -824,14 +824,14 @@ void synchInit()
   synchSetTempo(SYNCH_DEFAULT_BPM);
   synchNextInternalTick = 0;
 
-  pinMode(P_SYNCH_TICK, INPUT);
-  pinMode(P_SYNCH_RESTART, INPUT);
-  pinMode(P_SYNCH_RUN, INPUT);
+  pinMode(P_SYNCH_TICK, INPUT_PULLUP);
+  pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
+  pinMode(P_SYNCH_RUN, INPUT_PULLUP);
 
   // weak pull-ups
-  digitalWrite(P_SYNCH_TICK, HIGH);
-  digitalWrite(P_SYNCH_RESTART, HIGH);
-  digitalWrite(P_SYNCH_RUN, HIGH);
+  //digitalWrite(P_SYNCH_TICK, HIGH);
+  //digitalWrite(P_SYNCH_RESTART, HIGH);
+  //digitalWrite(P_SYNCH_RUN, HIGH);
 
   attachInterrupt(0, synchReset_ISR, RISING);
   attachInterrupt(1, synchTick_ISR, RISING);
