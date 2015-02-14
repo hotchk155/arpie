@@ -32,9 +32,9 @@
 #include <EEPROM.h>
 
 // Midi CC numbers to associate with hack header inputs
-#define HH_CC_PC5             16
+#define HH_CC_PC0             16
 #define HH_CC_PC4             17
-#define HH_CC_PC0             18
+#define HH_CC_PC5             18
 
 // Hack header pulse clock config
 #define SYNCH_TICK_TO_PULSE_RATIO  12
@@ -53,22 +53,22 @@ enum {
   PREF_HH_SYNCHTAB=      (unsigned int)0b1000000000000000,
 
   PREF_HHSW_PB3=         (unsigned int)0b0100000000000000,
-  
-  PREF_HHPOT_PC5=        (unsigned int)0b0011000000000000,
-  PREF_HHPOT_PC5_MOD=    (unsigned int)0b0001000000000000,
-  PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0010000000000000,
-  PREF_HHPOT_PC5_CC=     (unsigned int)0b0011000000000000,
+ 
+  PREF_HHPOT_PC0=        (unsigned int)0b0011000000000000,
+  PREF_HHPOT_PC0_TEMPO=  (unsigned int)0b0001000000000000,
+  PREF_HHPOT_PC0_GATE=   (unsigned int)0b0010000000000000,
+  PREF_HHPOT_PC0_CC=     (unsigned int)0b0011000000000000,
 
   PREF_HHPOT_PC4=        (unsigned int)0b0000110000000000,
   PREF_HHPOT_PC4_VEL=    (unsigned int)0b0000010000000000,
   PREF_HHPOT_PC4_PB=     (unsigned int)0b0000100000000000,
   PREF_HHPOT_PC4_CC=     (unsigned int)0b0000110000000000,
 
-  PREF_HHPOT_PC0=        (unsigned int)0b0000001100000000,
-  PREF_HHPOT_PC0_TEMPO=  (unsigned int)0b0000000100000000,
-  PREF_HHPOT_PC0_GATE=   (unsigned int)0b0000001000000000,
-  PREF_HHPOT_PC0_CC=     (unsigned int)0b0000001100000000,
-  
+  PREF_HHPOT_PC5=        (unsigned int)0b0000001100000000,
+  PREF_HHPOT_PC5_MOD=    (unsigned int)0b0000000100000000,
+  PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0000001000000000,
+  PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
+ 
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
 
   PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
@@ -2320,14 +2320,16 @@ void editArpType(char keyPress, byte forceRefresh)
 void editArpOptions(char keyPress, byte forceRefresh)
 {
   int i;
-  unsigned int b = (1<<(15-keyPress));
-  if(ARP_OPTS_MASK & b)
-  {
-    arpOptions^=b;
-    arpOptionsSave();
-    arpOptionsApply();
-    forceRefresh = 1;
-  } 
+  if(keyPress >= 0 && keyPress < 16) {
+    unsigned int b = (1<<(15-keyPress));
+    if(ARP_OPTS_MASK & b)
+    {
+      arpOptions^=b;
+      arpOptionsSave();
+      arpOptionsApply();
+      forceRefresh = 1;
+    } 
+  }
 
   if(forceRefresh)
   {
@@ -2340,14 +2342,16 @@ void editArpOptions(char keyPress, byte forceRefresh)
 void editPreferences(char keyPress, byte forceRefresh)
 {
   int i;
-  unsigned int b = (1<<(15-keyPress));
-  if(PREF_MASK & b)
-  {
-    gPreferences^=b;
-    prefsSave();
-    prefsApply();
-    forceRefresh = 1;
-  } 
+  if(keyPress >= 0 && keyPress < 16) {
+    unsigned int b = (1<<(15-keyPress));
+    if(PREF_MASK & b)
+    {
+      gPreferences^=b;
+      prefsSave();
+      prefsApply();
+      forceRefresh = 1;
+    } 
+  }
 
   if(forceRefresh)
   {
@@ -2993,6 +2997,7 @@ void editRun(unsigned long milliseconds)
     if(gPreferences & PREF_AUTOREVERT)
     {
       editMode = EDIT_MODE_PATTERN;
+      editPressType = EDIT_NO_PRESS; 
     }
     forceRefresh = 1;
     editRevertTime = 0;
@@ -3090,7 +3095,7 @@ class CPot
 {
   int value;
   enum { 
-    TOLERANCE = 3,
+    TOLERANCE = 4,
     UNKNOWN = -1,
   };
 public:  
