@@ -1,25 +1,28 @@
 ////////////////////////////////////////////////////////////////////////////////
-//  
-//    ------------------------------------------
-//     AAAAA    RRRRRR    PPPPPP    II   EEEEEEE
-//    AA   AA   RR   RR   PP   PP   II   EE
-//    AAAAAAA   RRRRRR    PPPPPP    II   EEEE
-//    AA   AA   RR   RR   PP        II   EE
-//    AA   AA   RR   RR   PP        II   EEEEEEE
-//    ------------------------------------------
-//    MONOPHONIC MIDI ARPEGGIATOR
-//    hotchk155/2013
+//
+//                                  //
+//
+//      //////   //  //// //////    //    ////
+//            // ////     //    //  //  //    //
+//      //////// //       //    //  //  ////////
+//    //      // //       //    //  //  //
+//      //////   //       //////    //    ////
+//      MIDI ARPEGGIATOR  //
+//      hotchk155/2013-15 //
 //
 //    Revision History   
 //    1.00  16Apr13  Baseline 
 //    1.01  21Apr13  Improvements for MIDI thru control
 //    1.02  26Apr13  Synch source/input lockout options
 //    1.03  12May13  Fix issue with synch thru/change lockout blink rate
-//    99.99 07Feb14  Midi CC filter
+//    1.04  09Nov13  Support MIDI stop/continue on external synch
+//    1.05  16May14  Force to scale options
+//    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
+//    1.07  16Nov14  Revert to primary menu function, glide mode
+//    A4    Feb2015  New release version
 //
-////////////////////////////////////////////////////////////////////////////////
-#define VERSION_HI  99
-#define VERSION_LO  99
+#define VERSION_HI  4
+#define VERSION_LO  0
 
 //
 // INCLUDE FILES
@@ -28,7 +31,69 @@
 #include <avr/io.h>
 #include <EEPROM.h>
 
-#define MIDI_FILTER_CC_NO          123  // cc number to filter out
+// Midi CC numbers to associate with hack header inputs
+#define HH_CC_PC5             16
+#define HH_CC_PC4             17
+#define HH_CC_PC0             18
+
+// Hack header pulse clock config
+#define SYNCH_TICK_TO_PULSE_RATIO  12
+#define SYNCH_CLOCK_PULSE_WIDTH    10
+#define SYNCH_CLOCK_MIN_PERIOD     20
+#define SYNCH_CLOCK_INVERT         0
+
+//
+// PREFERENCES WORD
+//
+enum {
+  PREF_HACKHEADER=       (unsigned int)0b1111111100000000,
+  PREF_HH_TYPE=          (unsigned int)0b1000000000000000,  
+  PREF_HHTYPE_POTS=      (unsigned int)0b0000000000000000,
+  
+  PREF_HH_SYNCHTAB=      (unsigned int)0b1000000000000000,
+
+  PREF_HHSW_PB3=         (unsigned int)0b0100000000000000,
+  
+  PREF_HHPOT_PC5=        (unsigned int)0b0011000000000000,
+  PREF_HHPOT_PC5_MOD=    (unsigned int)0b0001000000000000,
+  PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0010000000000000,
+  PREF_HHPOT_PC5_CC=     (unsigned int)0b0011000000000000,
+
+  PREF_HHPOT_PC4=        (unsigned int)0b0000110000000000,
+  PREF_HHPOT_PC4_VEL=    (unsigned int)0b0000010000000000,
+  PREF_HHPOT_PC4_PB=     (unsigned int)0b0000100000000000,
+  PREF_HHPOT_PC4_CC=     (unsigned int)0b0000110000000000,
+
+  PREF_HHPOT_PC0=        (unsigned int)0b0000001100000000,
+  PREF_HHPOT_PC0_TEMPO=  (unsigned int)0b0000000100000000,
+  PREF_HHPOT_PC0_GATE=   (unsigned int)0b0000001000000000,
+  PREF_HHPOT_PC0_CC=     (unsigned int)0b0000001100000000,
+  
+  PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
+
+  PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
+  PREF_LONGPRESS0=   (unsigned int)0b0000000000000000, //Shortest
+  PREF_LONGPRESS1=   (unsigned int)0b0000000000000100, //:
+  PREF_LONGPRESS2=   (unsigned int)0b0000000000001000, //:
+  PREF_LONGPRESS3=   (unsigned int)0b0000000000001100, //Longest
+  
+  PREF_LEDPROFILE =  (unsigned int)0b0000000000000011,  // Mask
+  PREF_LEDPROFILE0 = (unsigned int)0b0000000000000000,  // STD GREEN
+  PREF_LEDPROFILE1 = (unsigned int)0b0000000000000001,  // STD BLUE
+  PREF_LEDPROFILE2 = (unsigned int)0b0000000000000010,  // SUPER BRIGHT BLUE
+  PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011,  // SUPER BRIGHT WHITE
+  
+  PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
+};
+#define IS_HH_CLOCK  ((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
+#define IS_HH_POTS   ((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
+
+
+// The preferences word
+unsigned int gPreferences;
+
+// Forward declare the UI refresh flag
+extern byte editForceRefresh;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -66,12 +131,34 @@
 #define DEBOUNCE_COUNT 50
 
 // Time in ms that counts as a long button press
-#define UI_LONG_HOLD_TIME 1500
+enum 
+{
+  UI_HOLD_TIME_0 = 250,
+  UI_HOLD_TIME_1 = 500,
+  UI_HOLD_TIME_2 = 1000,
+  UI_HOLD_TIME_3 = 1500
+};
+unsigned int uiLongHoldTime;
 
-#define LED_BRIGHT 255
-#define LED_MEDIUM 25
-#define LED_DIM 1
-#define LED_OFF 0
+// Brightness levels of LEDs
+enum 
+{
+  UI_LEDPROFILE0_HI   = 100,
+  UI_LEDPROFILE0_MED  = 3,
+  UI_LEDPROFILE0_LO   = 1,
+  UI_LEDPROFILE1_HI   = 255,
+  UI_LEDPROFILE1_MED  = 3,
+  UI_LEDPROFILE1_LO   = 1,
+  UI_LEDPROFILE2_HI   = 255,
+  UI_LEDPROFILE2_MED  = 25,
+  UI_LEDPROFILE2_LO   = 4,
+  UI_LEDPROFILE3_HI   = 255,
+  UI_LEDPROFILE3_MED  = 35,
+  UI_LEDPROFILE3_LO   = 10
+};
+byte uiLedBright; 
+byte uiLedMedium;
+byte uiLedDim;
 
 #define UI_IN_LED_TIME     20
 #define UI_OUT_LED_TIME    20
@@ -81,6 +168,11 @@
 #define UI_HOLD_HELD     0x02
 #define UI_HOLD_CHORD    0x04
 #define UI_HOLD_LOCKED   0x08
+
+#define SYNCH_SOURCE_INTERNAL  1
+#define SYNCH_SOURCE_INPUT     2
+#define SYNCH_SOURCE_AUX       3
+
 
 volatile byte uiLeds[16];
 volatile char uiDataKey;
@@ -141,7 +233,7 @@ ISR(TIMER2_OVF_vect)
   {         
     // used to flash hold light
     ++uiFlashHold;  
-    
+
     // need to start scanning from the start of the led row again?
     if(uiScanPosition >= 15)
     {
@@ -159,7 +251,7 @@ ISR(TIMER2_OVF_vect)
 
     // look up the button index
     byte buttonIndex = 15 - uiScanPosition;
-    
+
     // does this LED need to be lit?    
     byte ledOnPeriod = uiLeds[buttonIndex];
     if(ledOnPeriod)
@@ -235,17 +327,17 @@ void uiInit()
   pinMode(P_UI_READ0, INPUT);     
   pinMode(P_UI_STROBE, OUTPUT);     
 
-  pinMode(P_UI_HOLDSW, INPUT_PULLUP);
+  pinMode(P_UI_HOLDSW, INPUT_PULLUP); // If you get an error here, get latest Arduino IDE
   pinMode(P_UI_IN_LED, OUTPUT);
   pinMode(P_UI_OUT_LED, OUTPUT);
   pinMode(P_UI_SYNCH_LED, OUTPUT);
   pinMode(P_UI_HOLD_LED, OUTPUT);
 
   // enable pullups
-  //digitalWrite(P_UI_HOLDSW, HIGH);
+//  digitalWrite(P_UI_HOLDSW, HIGH);
 
   for(int i=0;i<16;++i)
-    uiLeds[i] = LED_OFF;  
+    uiLeds[i] = 0;  
 
   uiDataKey = NO_VALUE;
   uiLastDataKey = NO_VALUE;
@@ -259,6 +351,10 @@ void uiInit()
   uiHoldPressedTime = 0;
   uiHoldType = 0;
   uiFlashHold = 0;
+  uiLongHoldTime = UI_HOLD_TIME_3;
+  uiLedBright = UI_LEDPROFILE2_HI; 
+  uiLedMedium = UI_LEDPROFILE2_MED; 
+  uiLedDim = UI_LEDPROFILE2_LO;
   
   // start the interrupt to service the UI   
   TCCR2A = 0;
@@ -272,26 +368,26 @@ void uiInit()
 void uiShowVersion()
 {
   if(digitalRead(P_UI_HOLDSW) == LOW) {
-    uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[1] =  !!((VERSION_HI/10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[2] =  !!((VERSION_HI/10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[3] =  !!((VERSION_HI/10)&0x1) ? LED_BRIGHT:LED_DIM;
-  
-    uiLeds[4] =  !!((VERSION_HI%10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[5] =  !!((VERSION_HI%10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[6] =  !!((VERSION_HI%10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[7] =  !!((VERSION_HI%10)&0x1) ? LED_BRIGHT:LED_DIM;
-  
-    uiLeds[8] =  !!((VERSION_LO/10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[9] =  !!((VERSION_LO/10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[10] = !!((VERSION_LO/10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[11] = !!((VERSION_LO/10)&0x1) ? LED_BRIGHT:LED_DIM;
-  
-    uiLeds[12] = !!((VERSION_LO%10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[13] = !!((VERSION_LO%10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[14] = !!((VERSION_LO%10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[15] = !!((VERSION_LO%10)&0x1) ? LED_BRIGHT:LED_DIM;
-    
+    uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[1] =  !!((VERSION_HI/10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[2] =  !!((VERSION_HI/10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[3] =  !!((VERSION_HI/10)&0x1) ? uiLedBright:uiLedDim;
+
+    uiLeds[4] =  !!((VERSION_HI%10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[5] =  !!((VERSION_HI%10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[6] =  !!((VERSION_HI%10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[7] =  !!((VERSION_HI%10)&0x1) ? uiLedBright:uiLedDim;
+
+    uiLeds[8] =  !!((VERSION_LO/10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[9] =  !!((VERSION_LO/10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[10] = !!((VERSION_LO/10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[11] = !!((VERSION_LO/10)&0x1) ? uiLedBright:uiLedDim;
+
+    uiLeds[12] = !!((VERSION_LO%10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[13] = !!((VERSION_LO%10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[14] = !!((VERSION_LO%10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[15] = !!((VERSION_LO%10)&0x1) ? uiLedBright:uiLedDim;
+
     while(digitalRead(P_UI_HOLDSW) == LOW);
   }
 }
@@ -337,6 +433,23 @@ void uiSetLeds(int start, int len, byte newStatus)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// SET ALL LEDS FROM 16-BIT UINT
+void uiSetLeds(unsigned int enabled, unsigned int status)
+{
+  unsigned int m=0x8000;
+  for(int i=0; i<16;++i)
+  {
+    if(status & m)
+      uiLeds[i] = uiLedBright;
+    else if(enabled & m)
+      uiLeds[i] = uiLedDim;
+    else 
+      uiLeds[i] = 0;
+     m>>=1;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // RUN THE UI STATE MACHINE
 void uiRun(unsigned long milliseconds)
 {
@@ -371,7 +484,7 @@ void uiRun(unsigned long milliseconds)
         uiHoldType |= UI_HOLD_PRESSED;
         uiHoldPressedTime = milliseconds;
       }
-      else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + UI_LONG_HOLD_TIME))
+      else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + uiLongHoldTime))
       {
         // record a long hold and set LOCK flag
         uiHoldType |= UI_HOLD_HELD;          
@@ -395,7 +508,7 @@ void uiRun(unsigned long milliseconds)
         uiHoldType &= ~UI_HOLD_HELD;
         uiHoldPressedTime = milliseconds;
       }    
-    
+
   if(uiHoldType & UI_HOLD_LOCKED)
     digitalWrite(P_UI_HOLD_LED, !!(uiFlashHold & 0x80));
   else
@@ -415,12 +528,18 @@ void uiRun(unsigned long milliseconds)
 ////////////////////////////////////////////////////////////////////////////////
 
 enum {
+  EEPROM_MAGIC_COOKIE = 99,
   EEPROM_INPUT_CHAN = 100,
   EEPROM_OUTPUT_CHAN,
   EEPROM_SYNCH_SOURCE,
   EEPROM_SYNCH_SEND,
-  EEPROM_MIDI_OPTS
+  EEPROM_MIDI_OPTS,
+  EEPROM_PREFS0,
+  EEPROM_PREFS1,
+  EEPROM_ARPOPTIONS0,
+  EEPROM_ARPOPTIONS1
 };
+#define EEPROM_MAGIC_COOKIE_VALUE  0x22
 
 ////////////////////////////////////////////////////////////////////////////////
 // SET A VALUE IN EEPROM
@@ -431,7 +550,7 @@ void eepromSet(byte which, byte value)
 
 ////////////////////////////////////////////////////////////////////////////////
 // GET A VALUE FROM EEPROM
-byte eepromGet(byte which, byte minValue, byte maxValue, byte defaultValue)
+byte eepromGet(byte which, byte minValue = 0x00, byte maxValue = 0xFF, byte defaultValue = 0x00)
 {
   byte value = EEPROM.read(which);
   if(value == defaultValue)
@@ -475,7 +594,7 @@ byte midiOptions;
 #define MIDI_OPTS_PASS_INPUT_CHMSG 0x04
 #define MIDI_OPTS_SYNCH_INPUT      0x08
 #define MIDI_OPTS_SYNCH_AUX        0x10
-#define MIDI_OPTS_FILTER_CC        0x20
+#define MIDI_OPTS_FILTER_CHMODE    0x20
 
 #define MIDI_OPTS_MAX_VALUE        0x3F
 #define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
@@ -484,6 +603,8 @@ byte midiOptions;
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
 #define MIDI_IS_NOTE_OFF(msg) ((msg & 0xf0) == 0x80)
 #define MIDI_MK_NOTE (0x90 | midiSendChannel)
+#define MIDI_MK_CTRL_CHANGE (0xB0 | midiSendChannel)
+#define MIDI_MK_PITCHBEND   (0xE0 | midiSendChannel)
 
 // realtime synch messages
 #define MIDI_SYNCH_TICK     0xf8
@@ -508,7 +629,7 @@ void midiInit()
   midiSendChannel = eepromGet(EEPROM_OUTPUT_CHAN, 0, 15, 0);
   midiReceiveChannel = eepromGet(EEPROM_INPUT_CHAN, 0, 15, MIDI_OMNI);
   midiOptions = eepromGet(EEPROM_MIDI_OPTS, 0, MIDI_OPTS_MAX_VALUE, MIDI_OPTS_DEFAULT_VALUE);
-  
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -533,7 +654,7 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
     if(numParams > 1)
       Serial.write(param2);    
   }
-  
+
   // indicate activity
   uiFlashOutLED(milliseconds);
 }
@@ -543,7 +664,7 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
 byte midiRead(unsigned long milliseconds, byte passThru)
 {
   extern byte synchToMIDI;
-  
+
   // loop while we have incoming MIDI serial data
   while(Serial.available())
   {    
@@ -557,14 +678,20 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       {
       case MIDI_SYNCH_TICK:
         if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
-          synchTick();
+          synchTick(SYNCH_SOURCE_INPUT);
         break;            
       case MIDI_SYNCH_START:
         if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
-          synchRestart();
+          synchStart(SYNCH_SOURCE_INPUT);
         break;
-        //case MIDI_SYNCH_CONTINUE:
-        //case MIDI_SYNCH_STOP:
+      case MIDI_SYNCH_CONTINUE:
+        if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
+          synchContinue(SYNCH_SOURCE_INPUT);
+        break;
+      case MIDI_SYNCH_STOP:
+        if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_INPUT))
+          synchStop(SYNCH_SOURCE_INPUT);
+        break;
       }
     }      
     // CHANNEL STATUS MESSAGE
@@ -574,9 +701,9 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       midiInRunningStatus = ch; 
       switch(ch & 0xF0)
       {
+      case 0xA0: //  Aftertouch  1  key  touch  
+      case 0xC0: //  Patch change  1  instrument #   
       case 0xD0: //  Channel Pressure  1  pressure  
-      case 0xC0: //  Patch change  2  instrument #   
-      case 0xA0: //  Aftertouch  2  key  touch  
         midiNumParams = 1;
         break;    
       case 0x80: //  Note-off  2  key  velocity  
@@ -595,10 +722,10 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       if(midiParamIndex >= midiNumParams)
       {
         midiParamIndex = 0;
-        
+
         // flash the LED
         uiFlashInLED(milliseconds);
-        
+
         // is it a channel message for our channel?
         if(MIDI_OMNI == midiReceiveChannel ||
           (midiInRunningStatus & 0x0F) == midiReceiveChannel)
@@ -611,8 +738,13 @@ byte midiRead(unsigned long milliseconds, byte passThru)
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                
             return midiInRunningStatus; // return to the arp engine
           case 0xB0: // CC
-            if(!!(midiOptions & MIDI_OPTS_FILTER_CC) && (MIDI_FILTER_CC_NO == midiParams[0]))
+            if(!!(midiOptions & MIDI_OPTS_FILTER_CHMODE)) {
+              if(midiParams[0] >= 120) {
+                // break from switch - ignore message
                 break;
+              }
+            }
+            // otherwise fall through
           default:
             if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_CHMSG))
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
@@ -671,12 +803,10 @@ void midiClearRunningStatus()
 // variables
 volatile byte synchToMIDI;                     // whether we're synching to MIDI
 volatile byte synchSendMIDI;                   // whether the MIDI clock is to be sent
-volatile byte synchSynchroniseSlaves;          // flag to say if a resynch is needed with synch slaves
 volatile unsigned long synchTickCount;         // tick count
 volatile int synchPlayRate;                    // ratio of ticks per arp note
 volatile unsigned long synchPlayIndex;         // arp note count
 volatile byte synchPlayAdvance;                // flag to indicate that next arp note can be played
-volatile byte synchRestartSequenceOnNextBeat;  // restart play index flag
 volatile int synchBPM;                         // internal synch bpm
 volatile float synchInternalTickPeriod;        // internal synch millseconds per tick
 volatile float synchNextInternalTick;          // internal synch next tick time
@@ -684,23 +814,58 @@ volatile float synchNextInternalTick;          // internal synch next tick time
 volatile unsigned long synchLastStepTime;      // the last step time
 volatile unsigned long synchStepPeriod;          // period between steps
 
-
 volatile byte synchBeat;                       // flag for flashing the SYNCH lamp
-volatile byte synchSendEvent;                  // synch events to send
+volatile int  synchFlags;                      // synch events to send
 volatile char synchTicksToSend;                // ticks to send
+
+
+volatile int synchThisPulseClockPeriod;         
+volatile unsigned long synchLastPulseClockTime;         
+byte synchInternalTicksSinceLastPulseClock;
+
+volatile char synchPulseClockTickCount;        // number of pending clock out pulses
+byte synchClockSendState;                      // ms counter for pulse width
+byte synchClockSendStateTimer;                 // used to detect change in ms
+
+#define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
+
+// Define pins used for the hack header
+#define P_SYNCH_HH_DETECT                19
+#define P_SYNCH_HH_CLKOUT                18  
+#define P_SYNCH_HH_CLKIN                 14
+#if SYNCH_HH_CLOCK_ACTIVELOW    
+  #define SYNCH_HH_CLOCK_ON           PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_OFF          PORTC |= (1<<4)
+#else
+  #define SYNCH_HH_CLOCK_OFF          PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_ON           PORTC |= (1<<4)
+#endif
+#define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
+#define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
+#define SYNCH_HH_ENABLE_PCINT         (PCMSK1 |= (1<<0))
+#define SYNCH_HH_DISABLE_PCINT        (PCMSK1 &= ~(1<<0))
 
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
 #define P_SYNCH_TICK     2
 #define P_SYNCH_RESTART  3
 #define P_SYNCH_RUN      4
 
+#define DBIT_SYNCH_RUN   (1<<4) // port D bit that indicates a run status on AUX SYNCH port
+
 #define MILLISECONDS_PER_MINUTE 60000
 #define TICKS_PER_QUARTER_NOTE 24
 #define SYNCH_DEFAULT_BPM 120
 
-//#define SYNCH_SEND_TICK  0x01
-#define SYNCH_SEND_START 0x02
-#define SYNCH_SEND_STOP  0x04
+#define SYNCH_SEND_START               0x0001    // This flag indicates that a START message needs to be sent to slaves
+#define SYNCH_SEND_STOP                0x0002    // This flag indicates that a STOP message needs to be sent to slaves
+#define SYNCH_SEND_CONTINUE            0x0004    // This flag indicates that a CONTINUE message needs to be sent to slaves
+#define SYNCH_RESET_NEXT_STEP_TIME     0x0008    // This flag indicates that the next step will be timed from now
+#define SYNCH_INPUT_RUNNING            0x0010    // This flag indicates that the MIDI INPUT synch is in a running state
+#define SYNCH_RESTART_ON_BEAT          0x0020    // This flag indicates that the sequence will restart at the next beat
+#define SYNCH_AUX_RUNNING              0x0040    // This flag indicates that the AUX SYNCH input in a running state 
+#define SYNCH_ZERO_TICK_COUNT          0x0080    // This flag indicates cause the tick count to restart (and get beat LED in synch)
+#define SYNCH_HOLD_AT_ZERO             0x0100    // This flag resets and suspends arpeggiator while still passing MIDI clock
+
 
 // Values for synchRate
 enum
@@ -722,55 +887,103 @@ enum
 };
 
 //////////////////////////////////////////////////////////////////////////
-// SYNCH TICK
-void synchTick()
+// HANDLER FOR A MIDI CLOCK TICK
+// This could be internally generated or come from an external source
+void synchTick(byte source)
 {
-  ++synchTickCount;
-  if(!(synchTickCount % synchPlayRate))
-  {
-    // store step length in ms.. this will be used
-    // when calculating step length
-    unsigned long ms = millis();
-    if(synchLastStepTime > 0)
-      synchStepPeriod = ms - synchLastStepTime;
-    synchLastStepTime = ms;
-    
-    // should the play sequence restart from the 
-    // beginning at this bext beat?
-    if(synchRestartSequenceOnNextBeat)
-    {
+  if(synchFlags & SYNCH_HOLD_AT_ZERO) {
+      synchTickCount = 0;
       synchPlayIndex = 0;
-      synchRestartSequenceOnNextBeat = 0;
-    }
-    else 
-    {
-      synchPlayIndex++;
-    }
-    synchPlayAdvance = 1;
   }
-  if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
-    synchBeat = 1;  
+  else 
+  {
+    if(synchFlags & SYNCH_ZERO_TICK_COUNT) {
+      synchFlags &= ~SYNCH_ZERO_TICK_COUNT;
+      synchTickCount = 0;
+    }
+    else {
+      ++synchTickCount;
+    }
+    if(!(synchTickCount % synchPlayRate))//ready for next step?
+    {
+      // store step length in ms.. this will be used
+      // when calculating step length
+      unsigned long ms = millis();
+      if(synchLastStepTime > 0)
+        synchStepPeriod = ms - synchLastStepTime;
+      synchLastStepTime = ms;
+  
+      if((SYNCH_SOURCE_INPUT == source) && !(synchFlags&SYNCH_INPUT_RUNNING))
+      {
+        // do not advance playback - midi in synch is stopped
+      }
+      else if((SYNCH_SOURCE_AUX == source) && !(synchFlags&SYNCH_AUX_RUNNING))
+      {
+        // do not advance playback - aux synch is stopped
+      }
+      else 
+      {
+        if(synchFlags & SYNCH_RESTART_ON_BEAT)
+        {
+          synchPlayIndex = 0;
+        }
+        else 
+        {
+          synchPlayIndex++;
+        }
+        synchPlayAdvance = 1;
+      }
+    }
+    synchFlags &= ~SYNCH_RESTART_ON_BEAT;
     
+    if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
+      synchBeat = 1;  
+  }
+
   if(synchSendMIDI)
     synchTicksToSend++;
+    
+  if(IS_HH_CLOCK)
+    synchPulseClockTickCount++;
 }
 
 //////////////////////////////////////////////////////////////////////////
 // RESTART PLAY FROM START OF SEQUENCE IMMEDIATELY
-void synchRestart()
+void synchRestartSequence()
 {
   synchLastStepTime = millis();
   synchTickCount = 0;
   synchPlayIndex = 0;
   synchPlayAdvance = 1;
-  synchRestartSequenceOnNextBeat = 0;
   synchTicksToSend = 0;
-  synchSendEvent = 0;
   synchBeat = 1;  
-  if(synchSendMIDI)
-  {
-    synchSendEvent |= SYNCH_SEND_START;
-  }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// START PLAYING
+void synchStart(byte source)
+{
+  if(SYNCH_SOURCE_INPUT == source) synchFlags|=SYNCH_INPUT_RUNNING;
+  if(SYNCH_SOURCE_AUX == source) synchFlags|=SYNCH_AUX_RUNNING;
+  synchFlags |= SYNCH_SEND_START;  
+  synchRestartSequence();
+}
+
+//////////////////////////////////////////////////////////////////////////
+// STOP PLAYING
+void synchStop(byte source)
+{
+  if(SYNCH_SOURCE_INPUT == source) synchFlags&=~SYNCH_INPUT_RUNNING;
+  if(SYNCH_SOURCE_AUX == source) synchFlags&=~SYNCH_AUX_RUNNING;
+  synchFlags |= SYNCH_SEND_STOP;
+}
+//////////////////////////////////////////////////////////////////////////
+// CONTINUE PLAYING FROM CURRENT POSITION
+void synchContinue(byte source)
+{
+  if(SYNCH_SOURCE_INPUT == source) synchFlags|=SYNCH_INPUT_RUNNING;
+  if(SYNCH_SOURCE_AUX == source) synchFlags|=SYNCH_AUX_RUNNING;
+  synchFlags |= SYNCH_SEND_CONTINUE;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -782,7 +995,7 @@ void synchRestart()
 ISR(synchReset_ISR)
 {
   if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))     
-    synchRestart();
+    synchStart(SYNCH_SOURCE_AUX);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -793,8 +1006,28 @@ ISR(synchReset_ISR)
 //////////////////////////////////////////////////////////////////////////
 ISR(synchTick_ISR)
 {
-  if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))     
-    synchTick();
+  // For AUX midi tick to be actioned we need to synch to AUX MIDI and we need a RUNNING status
+  if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))
+    synchTick(SYNCH_SOURCE_AUX);
+}
+
+//////////////////////////////////////////////////////////////////////////
+//
+// PCINT1_vect
+// Pin change interrupt on external pulse clock
+// 
+//////////////////////////////////////////////////////////////////////////
+ISR(PCINT1_vect)
+{
+  if(SYCH_HH_CLOCK_IN)  // rising edge
+  {
+    unsigned long ms = millis();
+    if(synchLastPulseClockTime && synchLastPulseClockTime < ms)
+      synchThisPulseClockPeriod = ms - synchLastPulseClockTime;
+    else      
+      synchFlags |= SYNCH_ZERO_TICK_COUNT; // synch the beat LED
+    synchLastPulseClockTime = ms;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -804,6 +1037,21 @@ void synchSetTempo(int bpm)
   synchBPM = bpm;
   synchInternalTickPeriod = (float)MILLISECONDS_PER_MINUTE/(bpm * TICKS_PER_QUARTER_NOTE);
 }
+void synchSetInternalTickPeriod(float period)
+{
+  synchInternalTickPeriod = period;
+  int bpm = (float)MILLISECONDS_PER_MINUTE / (TICKS_PER_QUARTER_NOTE * period);
+  if(synchBPM != bpm)
+  {
+    synchBPM = bpm;
+    editForceRefresh = 1;
+  }
+}
+void synchResynch() 
+{
+  synchFlags |= SYNCH_RESTART_ON_BEAT;
+  synchLastPulseClockTime = 0;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // SYNCH INIT
@@ -811,21 +1059,20 @@ void synchInit()
 {
   // by default don't synch
   synchToMIDI = eepromGet(EEPROM_SYNCH_SOURCE,0,1,0);
-  
+
   // by default do not send synch
   synchSendMIDI = eepromGet(EEPROM_SYNCH_SEND,0,1,0);
-  synchSynchroniseSlaves = 0;
   synchTicksToSend = 0;
-  synchSendEvent = 0;
-  
+  synchFlags = 0;
+
   // set default play rate
   synchPlayRate = SYNCH_RATE_16;
 
   synchLastStepTime = 0;
   synchStepPeriod = 0;
-  
+
   // reset the counters
-  synchRestart();
+  synchRestartSequence();
 
   // initialise internal synch generator
   synchSetTempo(SYNCH_DEFAULT_BPM);
@@ -834,14 +1081,33 @@ void synchInit()
   pinMode(P_SYNCH_TICK, INPUT_PULLUP);
   pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
   pinMode(P_SYNCH_RUN, INPUT_PULLUP);
-
-  // weak pull-ups
-  //digitalWrite(P_SYNCH_TICK, HIGH);
-  //digitalWrite(P_SYNCH_RESTART, HIGH);
-  //digitalWrite(P_SYNCH_RUN, HIGH);
-
   attachInterrupt(0, synchReset_ISR, RISING);
   attachInterrupt(1, synchTick_ISR, RISING);
+
+  synchPulseClockTickCount = 0;
+  synchClockSendState = 0;
+  synchClockSendStateTimer = 0;
+  synchLastPulseClockTime  = 0;
+  synchThisPulseClockPeriod = 0;         
+  synchInternalTicksSinceLastPulseClock = 0;
+  
+  if(IS_HH_CLOCK) {
+     pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
+     pinMode(P_SYNCH_HH_CLKIN, INPUT);
+     pinMode(P_SYNCH_HH_DETECT, INPUT_PULLUP);
+     delay(10);
+     if(SYNCH_HH_INPUT_DETECT) 
+     {    
+       synchClockSendState = SYNCH_HH_EXT_CLOCK;  // disable clock output
+       PCICR |= (1<<1);                           // enable pin change interrupt 1
+       PCMSK1 = 0;                                // initially all pins disabled for PC interrupt
+       SYNCH_HH_ENABLE_PCINT;                     // PCINT enabled on input pin 
+     }
+     else
+     {
+       SYNCH_HH_DISABLE_PCINT;                    // no pin change interrupt
+     } 
+  }
   interrupts();
 }
 
@@ -849,44 +1115,110 @@ void synchInit()
 // SYNCH RUN
 void synchRun(unsigned long milliseconds)
 {
-  // are we synching to MIDI?
+  byte auxRunning = !!(PIND & DBIT_SYNCH_RUN); // see if aux port is running
+  if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX)) // Check if we are interested
+  {
+    if(auxRunning && !(synchFlags & SYNCH_AUX_RUNNING)) // transition STOP->RUN
+      synchContinue(SYNCH_SOURCE_AUX);
+    else if(!auxRunning && !!(synchFlags & SYNCH_AUX_RUNNING)) // transition RUN->STOP
+      synchStop(SYNCH_SOURCE_AUX);
+  }  
+  synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
+
+  // else check if we are using internal clock
   if(!synchToMIDI)
-  {      
-    if(synchSynchroniseSlaves)
+  { 
+    if(synchThisPulseClockPeriod) // have we got a clock period measurement?
+    {      
+      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / SYNCH_TICK_TO_PULSE_RATIO);  // infer bpm
+      synchThisPulseClockPeriod = 0;
+      synchNextInternalTick = milliseconds;  // tick immediately
+      while(synchInternalTicksSinceLastPulseClock++ < SYNCH_TICK_TO_PULSE_RATIO)
+        synchTick(SYNCH_SOURCE_INTERNAL); // make up any missed ticks (when tempo is being increased)
+      synchInternalTicksSinceLastPulseClock = 0;
+    }
+    
+    if(synchClockSendState == SYNCH_HH_EXT_CLOCK && 
+      synchInternalTicksSinceLastPulseClock >= SYNCH_TICK_TO_PULSE_RATIO)
     {
+      // hold off any ticks until the next external pulse. External tempo is being reduced
+    }
+    else if(synchFlags & SYNCH_RESET_NEXT_STEP_TIME)
+    {      
       synchNextInternalTick = milliseconds + synchInternalTickPeriod;
-      synchSendEvent = SYNCH_SEND_START;
-      synchSynchroniseSlaves = 0;
     }
     // need to generate our own ticks
     else if(synchNextInternalTick < milliseconds)
     {
-      synchTick();
+      ++synchInternalTicksSinceLastPulseClock;
+      synchTick(SYNCH_SOURCE_INTERNAL);
       synchNextInternalTick += synchInternalTickPeriod;
       if(synchNextInternalTick < milliseconds)
         synchNextInternalTick = milliseconds + synchInternalTickPeriod;
     }
   }
+  synchFlags &= ~SYNCH_RESET_NEXT_STEP_TIME;//clear flag
 
-  // stop?
-  if(synchSendEvent & SYNCH_SEND_STOP)
+
+
+  if(synchSendMIDI)//Are we sending MIDI synch to slaves?
   {
-    midiSendRealTime(MIDI_SYNCH_STOP);
-    synchTicksToSend = 0;
+    if(synchFlags & SYNCH_SEND_STOP)//Stop
+    {
+      midiSendRealTime(MIDI_SYNCH_STOP);
+      synchTicksToSend = 0;
+    }
+    else if(synchFlags & SYNCH_SEND_START)//Start
+    {
+      midiSendRealTime(MIDI_SYNCH_START);
+    }  
+    else if(synchFlags & SYNCH_SEND_CONTINUE)//Continue?
+    {
+      midiSendRealTime(MIDI_SYNCH_CONTINUE);
+    }  
+
+    if(synchTicksToSend>0) // need to send a tick?
+    {
+      synchTicksToSend--;
+      midiSendRealTime(MIDI_SYNCH_TICK);
+    }    
   }
   else
   {
-    // start?
-    if(synchSendEvent & SYNCH_SEND_START)
-      midiSendRealTime(MIDI_SYNCH_START);
-  }  
-  synchSendEvent = 0;
-  
-  if(synchTicksToSend>0)
-  {
-    synchTicksToSend--;
-    midiSendRealTime(MIDI_SYNCH_TICK);
+    if(synchFlags & SYNCH_SEND_STOP)//Stop
+      midiSendRealTime(MIDI_SYNCH_STOP);
+    synchTicksToSend = 0; // ensure no ticks will be sent
   }
+  synchFlags &= ~(SYNCH_SEND_STOP|SYNCH_SEND_START|SYNCH_SEND_CONTINUE); // clear all realtime msg flags
+
+  ///////////////////////////////////////////////////////
+  // Handling pulse clock output 
+  if(synchClockSendState != SYNCH_HH_EXT_CLOCK) 
+  {    
+    if(!synchClockSendState)
+    {
+      // check if a new pulse is required
+      if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
+      {
+        // start a new pulse
+        SYNCH_HH_CLOCK_ON;
+        synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
+        synchClockSendState = 1;
+      }
+    }
+    else if(synchClockSendStateTimer != (byte)milliseconds)
+    {
+      // pulse is in progress
+      synchClockSendStateTimer = (byte)milliseconds;
+      ++synchClockSendState;
+      if(synchClockSendState >= SYNCH_CLOCK_MIN_PERIOD)
+        synchClockSendState = 0;
+  
+      if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH)
+        SYNCH_HH_CLOCK_OFF;
+    }
+  }
+  ///////////////////////////////////////////////////////
 
   // check if we need to report a beat
   if(synchBeat)
@@ -918,6 +1250,10 @@ void synchRun(unsigned long milliseconds)
 #define ARP_GET_VELOCITY(x) (((x)>>8)&0x7f)
 #define ARP_MAX_SEQUENCE 60
 #define ARP_NOTE_HELD 0x8000
+#define ARP_PLAY_THRU 0x8000
+#define ARP_PATN_PLAY  0x01
+#define ARP_PATN_GLIDE 0x02
+#define ARP_PATN_ACCENT 0x04
 
 // Values for arpType
 enum 
@@ -926,7 +1262,8 @@ enum
   ARP_TYPE_DOWN,
   ARP_TYPE_UP_DOWN,
   ARP_TYPE_RANDOM,
-  ARP_TYPE_MANUAL
+  ARP_TYPE_MANUAL,
+  ARP_TYPE_POLYGATE
 };
 
 // Values for arpInsertMode
@@ -939,6 +1276,33 @@ enum
   ARP_INSERT_4_2
 };
 
+// Values for force to scale masks
+enum 
+{
+  //                               0123456789012345
+  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,  //no scale
+  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,  //diatonic modes
+  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,  //:
+  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,  //:
+  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,  //:
+  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,  //:
+  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,  //:
+  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010,  //:
+};
+
+// Force to scale mode for out of scale notes
+enum
+{
+    ARP_SCALE_ADJUST_SKIP   = (unsigned)0x0000,  // Out of scale notes are skipped
+    ARP_SCALE_ADJUST_MUTE   = (unsigned)0x1000,  // Out of scale notes are muted
+    ARP_SCALE_ADJUST_FLAT   = (unsigned)0x2000,  // Out of scale notes are flattened to bring them to scale
+    ARP_SCALE_ADJUST_SHARP  = (unsigned)0x3000,  // Out of scale notes are sharpened to bring them to scale
+    ARP_SCALE_ADJUST_TOGGLE = (unsigned)0x4000,  // Out of scale notes are sharpened/flattened alternately
+    
+    ARP_SCALE_ADJUST_MASK   = (unsigned)0x7000,        
+    ARP_SCALE_TOGGLE_FLAG   = (unsigned)0x8000
+};
+
 // ARP PARAMETERS
 byte arpType;              // arpeggio type
 char arpOctaveShift;       // octave transpose
@@ -946,17 +1310,21 @@ byte arpOctaveSpan;        // number of octaves to span with the arpeggio
 byte arpInsertMode;        // additional note insertion mode
 byte arpVelocityMode;      // (0 = original, 1 = override)
 byte arpVelocity;          // velocity 
-byte arpGateLength;        // gate length (0 = tie notes)
+byte arpGateLength;        // gate length (0 = tie notes, 1-127 = fraction of beat)
 char arpTranspose;         // up/down transpose
+char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
+unsigned int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
 
 // CHORD INFO - notes held by user
 unsigned int arpChord[ARP_MAX_CHORD];
 int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
+char arpChordRootNote;
 
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
 unsigned int arpSequence[ARP_MAX_SEQUENCE];
 int arpSequenceLength;     // number of notes in the sequence
+int arpSequenceIndex;
 
 // NOTE PATTERN - the rythmic pattern of played/muted notes
 byte arpPattern[ARP_MAX_SEQUENCE];
@@ -967,20 +1335,61 @@ byte arpRefresh;  // whether the pattern index is changed
 
 // STOP NOTE - remembers which (single) note is playing
 // and when it should be stopped
-byte arpStopNote;
+byte arpPlayingNotes[16];
 unsigned long arpStopNoteTime;
 
 // used to time the length of a step
 unsigned long arpLastPlayAdvance;
 
+enum {
+  ARP_FLAG_REBUILD = 0x01,
+  ARP_FLAG_MUTE    = 0x02
+};
+
 // ARP STATUS FLAGS
-byte arpRebuild;          // whether the sequence needs to be rebuilt
+byte arpFlags;          // whether the sequence needs to be rebuilt
+unsigned int arpOptions;
+
+enum {
+                                    //0123456789012345
+  ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
+  ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
+  ARP_OPT_GLIDEMODE       = (unsigned)0b0001000000000000, // GLIDE mode (0=one step 1=till next note)
+  ARP_OPT_PATNMODE2       = (unsigned)0b0000100000000000, // PATN extended mode (0=glide 1=accent)
+  ARP_OPTS_MASK           = (unsigned)0b1011100000000000
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// APPLY ARP OPTIONS BITS TO VARIABLES
+void arpOptionsApply()
+{
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// LOAD ARP OPTIONS
+void arpOptionsLoad()
+{
+  arpOptions = eepromGet(EEPROM_ARPOPTIONS1); 
+  arpOptions<<=8;
+  arpOptions |= eepromGet(EEPROM_ARPOPTIONS0); 
+  arpOptionsApply();  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SAVE NEW PRFERENCES TO EEPROM
+void arpOptionsSave()
+{
+  eepromSet(EEPROM_ARPOPTIONS0,(arpOptions&0xFF));  
+  eepromSet(EEPROM_ARPOPTIONS1,((arpOptions>>8)&0xFF));  
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // ARP INIT
 void arpInit()
 {
-//  arpHold = 0;
+  int i;
+  
+  //  arpHold = 0;
   arpType = ARP_TYPE_UP;
   arpOctaveShift = 0;
   arpOctaveSpan = 1;
@@ -991,16 +1400,70 @@ void arpInit()
   arpNotesHeld = 0;
   arpPatternLength = 16;
   arpRefresh = 0;
-  arpRebuild = 0;
-  arpStopNote = 0;
-  arpGateLength = 10;
+  arpFlags = 0;
+  arpGateLength = 100;
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
+  arpForceToScaleRoot=0;
+  arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
+  arpChordRootNote = -1;
+  arpSequenceIndex = 0;
+  arpOptionsLoad();
   
   // the pattern starts with all beats on
-  for(int i=0;i<16;++i)
-    arpPattern[i] = 1;
+  for(i=0;i<16;++i)
+    arpPattern[i] = ARP_PATN_PLAY;
+
+  // no notes playing
+  for(i=0;i<16;++i)
+    arpPlayingNotes[i] = 0;    
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// START A NOTE PLAYING 
+// We remember the note is playing so we can stop it later. If an additional 
+// "note set" is provided then we log it there too
+void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *noteSet)
+{  
+  if(note<128)
+  {
+    midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);          
+    byte n = (1<<(note&0x07));
+    arpPlayingNotes[note>>3] |= n;
+    if(noteSet)
+      noteSet[note>>3] |= n;
+  }    
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// STOP PLAYING NOTES
+// Stop all currently playing notes. If a "note set" is provided then any notes
+// present in it are left alone and remain playing
+void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
+{ 
+  for(int i=0; i<16; ++i)  
+  {
+    if(arpPlayingNotes[i])
+    {
+      byte note = i<<3;
+      byte n = arpPlayingNotes[i];
+      byte m = 0x01;
+      while(m)
+      {
+        if(n&m)
+        {
+          if(!excludedNoteSet || !(excludedNoteSet[i]&m))
+          {
+            midiWrite(MIDI_MK_NOTE, note, 0, 2, milliseconds);
+            arpPlayingNotes[i] &= ~m;
+          }
+        }
+        ++note;
+        m<<=1;
+      }
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1008,22 +1471,28 @@ void arpInit()
 void arpClear()
 {
   arpChordLength = 0;
-  arpRebuild = 1;
+  arpFlags |= ARP_FLAG_REBUILD;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// COPY CHORD
-void arpCopyChord(int *dest)
+// COPY CHORD - RETURN LOWEST NOTE
+char arpCopyChord(int *dest)
 {
+  char m =-1;
   int i;
   for(i=0; i<arpChordLength; ++i)
+  {
     dest[i] = arpChord[i];
+    if(m == -1 || arpChord[i] < m)
+      m = arpChord[i];
+  }
+  return m;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// SORT NOTES OF CHORD
+// SORT NOTES OF CHORD - RETURN LOWEST NOTE
 // Crappy bubblesort.. but there are not too many notes
-void arpSortChord(int *dest)
+char arpSortChord(int *dest)
 {
   arpCopyChord(dest);
   byte sorted = 0;
@@ -1041,6 +1510,7 @@ void arpSortChord(int *dest)
       }
     }
   }
+ return arpChord[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1048,11 +1518,11 @@ void arpSortChord(int *dest)
 void arpRandomizeChord(int *dest)
 {
   int i,j;
-  
+
   // clear destination buffer
   for(i=0; i<arpChordLength; ++i)
     dest[i] = 0;
-    
+
   // loop through the source chord
   for(i=0; i<arpChordLength; ++i)
   {
@@ -1071,22 +1541,23 @@ void arpRandomizeChord(int *dest)
     }        
   }
 }
-  
+
 ////////////////////////////////////////////////////////////////////////////////
 // BUILD A NEW SEQUENCE
 void arpBuildSequence()
-{
+{  
   // sequence is empty if no chord notes present
+  arpChordRootNote=-1;
   arpSequenceLength=0;
   if(!arpChordLength)
     return;
-    
+
   // sort the chord info if needed
   int chord[ARP_MAX_CHORD];
   if(arpType == ARP_TYPE_UP || arpType == ARP_TYPE_DOWN || arpType == ARP_TYPE_UP_DOWN)
-    arpSortChord(chord);
+    arpChordRootNote = arpSortChord(chord);
   else
-    arpCopyChord(chord);
+    arpChordRootNote = arpCopyChord(chord);
 
   int tempSequence[ARP_MAX_SEQUENCE];
   int tempSequenceLength = 0;        
@@ -1098,6 +1569,9 @@ void arpBuildSequence()
   while(nextPass && 
     tempSequenceLength < ARP_MAX_SEQUENCE)
   {
+    arpForceToScaleMask ^= ARP_SCALE_TOGGLE_FLAG;
+    byte adjustToggle = !!(arpForceToScaleMask & ARP_SCALE_TOGGLE_FLAG);
+    
     // this loop is for the octave span
     int octaveCount;
     for(octaveCount = 0; 
@@ -1116,15 +1590,16 @@ void arpBuildSequence()
         // fall thru
       case ARP_TYPE_UP:
       case ARP_TYPE_MANUAL:
+      case ARP_TYPE_POLYGATE:
         chordIndex = 0;
         lastChordIndex = arpChordLength - 1;
         transpose = arpTranspose + 12 * (arpOctaveShift + octaveCount);    
         chordIndexDelta = 1;
         nextPass = 0;
         break;          
-        
+
       case ARP_TYPE_DOWN:
-          chordIndex = arpChordLength - 1;;
+        chordIndex = arpChordLength - 1;
         lastChordIndex = 0;
         transpose = arpTranspose + 12 * (arpOctaveShift + arpOctaveSpan - octaveCount - 1);    
         chordIndexDelta = -1;
@@ -1166,7 +1641,7 @@ void arpBuildSequence()
             // top note can be played but bottom note is not
             chordIndex = arpChordLength - 1;
             lastChordIndex = 1;
-              
+
             // this the the last octave to play
             nextPass = 0;
           }
@@ -1191,89 +1666,135 @@ void arpBuildSequence()
         // fetch the current note
         int note = ARP_GET_NOTE(chord[chordIndex]);
         byte velocity = ARP_GET_VELOCITY(chord[chordIndex]);
-        
+        byte skipNote = 0;
+
         // transpose as needed
         note += transpose;
-        while(note>127)
-          note -= 12;
-        while(note<0)
-          note += 12;          
-        int newNote = ARP_MAKE_NOTE(note, velocity);
+
+        // force to scale
+        int scaleNote = note - arpForceToScaleRoot;
+        while(scaleNote<0)
+          scaleNote+=12;
+        if(!(arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
+        {
+          switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+          { 
+              case ARP_SCALE_ADJUST_SKIP: 
+                skipNote = 1;
+                break;
+              case ARP_SCALE_ADJUST_MUTE: 
+                note = 0; 
+                break;
+              case ARP_SCALE_ADJUST_FLAT: 
+                --note; 
+                break;
+              case ARP_SCALE_ADJUST_SHARP: 
+                ++note; 
+                break;
+              case ARP_SCALE_ADJUST_TOGGLE: 
+                if(adjustToggle)
+                  ++note;
+                else
+                  --note;
+                adjustToggle = !adjustToggle;
+                break;
+          }
+        }
         
-        // track lowest and highest notes
-        if(note > ARP_GET_NOTE(highestNote))
-          highestNote = newNote;
-        if(note < ARP_GET_NOTE(lowestNote))
-          lowestNote = newNote;
-          
-        // insert into sequence
-        tempSequence[tempSequenceLength++] = newNote;
-        
+        if(!skipNote)
+        {
+          // force to MIDI range           
+          while(note>127)
+            note -= 12;
+          while(note<0)
+            note += 12;          
+          int newNote = ARP_MAKE_NOTE(note, velocity);
+  
+          // track lowest and highest notes
+          if(note > ARP_GET_NOTE(highestNote))
+            highestNote = newNote;
+          if(note < ARP_GET_NOTE(lowestNote))
+            lowestNote = newNote;
+  
+          // insert into sequence
+          tempSequence[tempSequenceLength++] = newNote;
+        }
+
         // have we reached the last note we want?
         if(chordIndex == lastChordIndex)
           break;
-          
+
         // skip to next note in the chord
         chordIndex += chordIndexDelta;
       }      
     }           
   }  
-  
-    
-  // we have the expanded sequence for one octave... now we need to 
-  // perform any necessary note insertions
+
+
   int i, j;
   arpSequenceLength = 0;
-  switch(arpInsertMode)
+  if(arpType == ARP_TYPE_POLYGATE)
   {
-  case ARP_INSERT_OFF:
-    for(i=0; i<tempSequenceLength; ++i)
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-    break;
-  case ARP_INSERT_HI:
-    for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
+      // Polyphonic gate mode, copy the notes over and flag to be 
+      // played at the same time
+      for(i=0; i<tempSequenceLength; ++i)
+        arpSequence[arpSequenceLength++] = ARP_PLAY_THRU|tempSequence[i];
+  }
+  else
+  {
+    // we have the expanded sequence for one octave... now we need to 
+    // perform any necessary note insertions
+    switch(arpInsertMode)
     {
-      if(tempSequence[i] != highestNote)
-      {
-        arpSequence[arpSequenceLength++] = highestNote;
+    case ARP_INSERT_OFF:
+      for(i=0; i<tempSequenceLength; ++i)
         arpSequence[arpSequenceLength++] = tempSequence[i];
-      }
-    }
-    break;
-  case ARP_INSERT_LOW:
-    for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
-    {
-      if(tempSequence[i] != lowestNote)
+      break;
+    case ARP_INSERT_HI:
+      for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
       {
-        arpSequence[arpSequenceLength++] = lowestNote;
-        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(tempSequence[i] != highestNote)
+        {
+          arpSequence[arpSequenceLength++] = highestNote;
+          arpSequence[arpSequenceLength++] = tempSequence[i];
+        }
       }
-    }
-    break;
-  case ARP_INSERT_3_1: // 3 steps forward and one back 012123234345456
-    i = 0;
-    j = 0;
-    while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
-    {
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-      if(!(++j%3))
-        i--;
-      else
-        i++;
-    }
-    break;
-  case ARP_INSERT_4_2: // 4 steps forward and 2 back 0123123423453456
-    i = 0;
-    j = 0;
-    while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
-    {
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-      if(!(++j%4))
-        i-=2;
-      else
-        i++;
-    }
-    break;
+      break;
+    case ARP_INSERT_LOW:
+      for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
+      {
+        if(tempSequence[i] != lowestNote)
+        {
+          arpSequence[arpSequenceLength++] = lowestNote;
+          arpSequence[arpSequenceLength++] = tempSequence[i];
+        }
+      }
+      break;
+    case ARP_INSERT_3_1: // 3 steps forward and one back 012123234345456
+      i = 0;
+      j = 0;
+      while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
+      {
+        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(!(++j%3))
+          i--;
+        else
+          i++;
+      }
+      break;
+    case ARP_INSERT_4_2: // 4 steps forward and 2 back 0123123423453456
+      i = 0;
+      j = 0;
+      while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
+      {
+        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(!(++j%4))
+          i-=2;
+        else
+          i++;
+      }
+      break;
+    } 
   }
 }  
 
@@ -1289,60 +1810,81 @@ void arpReadInput(unsigned long milliseconds)
   {
     // read the MIDI port
     byte msg = midiRead(milliseconds, 0);      
-    if(!msg || !!(uiHoldType & UI_HOLD_LOCKED))
-      break;
+    if(!msg)
+      break;      
+      
     byte note = midiParams[0];
     byte velocity = midiParams[1];
-
-    // NOTE ON MESSAGE
+    
+    // Note on message
     if(MIDI_IS_NOTE_ON(msg) && velocity && note)
     {
-      // scan the current chord for this note
-      // to see if it is already part of the chord      
-      noteIndexInChord = -1;
-      arpNotesHeld = 0;
-      for(i=0;i<arpChordLength;++i)
-      {        
-        if(ARP_GET_NOTE(arpChord[i])== note)
-          noteIndexInChord = i;
-        if(arpChord[i] & ARP_NOTE_HELD)
-          arpNotesHeld++;
-      }
-
-      // is the note already part of the current chord?
-      if(noteIndexInChord >= 0 && arpNotesHeld)
+      // Check for a lock out (This prevents any new notes
+      // being added to the chord, but we still need to track
+      // notes that get released)
+      if(!!(uiHoldType & UI_HOLD_LOCKED))
       {
-        // Mark the key as held. There is no change to the arpeggio
-        if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+       // transpose by MIDI?
+       if(!!(arpOptions & ARP_OPT_MIDITRANSPOSE))
+       {
+         // transpose things
+         if(arpChordRootNote != -1)
+         {
+            arpTranspose = note - arpChordRootNote;                        
+            arpFlags |= ARP_FLAG_REBUILD;
+            editForceRefresh = 1;
+         }
+       }
+      }
+      else
+      {
+        // scan the current chord for this note
+        // to see if it is already part of the chord      
+        noteIndexInChord = -1;
+        arpNotesHeld = 0;
+        for(i=0;i<arpChordLength;++i)
         {        
-          arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
-          arpNotesHeld++;
+          if(ARP_GET_NOTE(arpChord[i])== note)
+            noteIndexInChord = i;
+          if(arpChord[i] & ARP_NOTE_HELD)
+            arpNotesHeld++;
         }
-      }
-      else 
-      {
-        // if its the first note of a new chord then
-        // we need to restart play
-        if(!arpNotesHeld)
+  
+        // is the note already part of the current chord?
+        if(noteIndexInChord >= 0 && arpNotesHeld)
         {
-          arpChordLength = 0;
-          if(!!(uiHoldType & UI_HOLD_CHORD))
-            synchRestartSequenceOnNextBeat = 1;
-          else
-            synchRestart();
+          // Mark the key as held. There is no change to the arpeggio
+          if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+          {        
+            arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
+            arpNotesHeld++;
+          }
         }
-                        
-        // insert the new note into the chord                   
-        if(arpChordLength < ARP_MAX_CHORD-1)
-        {        
-          arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
-          arpChord[arpChordLength] |= ARP_NOTE_HELD;
-          arpChordLength++;
-          arpNotesHeld++;
-          
-          // flag that the arp sequence needs to be rebuilt
-          arpRebuild = 1;          
-        }  
+        else 
+        {
+          // if its the first note of a new chord then
+          // we need to restart play
+          if(!arpNotesHeld)
+          {
+            arpChordLength = 0;
+            if(!!(uiHoldType & UI_HOLD_CHORD))
+              synchFlags |= SYNCH_RESTART_ON_BEAT; // wait till next beat before restarting
+            else
+              synchRestartSequence();
+          }
+  
+          // insert the new note into the chord                   
+          if(arpChordLength < ARP_MAX_CHORD-1)
+          {        
+            arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
+            arpChord[arpChordLength] |= ARP_NOTE_HELD;
+            arpChordLength++;
+            arpNotesHeld++;
+  
+            // flag that the arp sequence needs to be rebuilt
+            arpFlags |= ARP_FLAG_REBUILD;
+          }  
+        }
       }
     }
     // NOTE OFF MESSAGE
@@ -1366,23 +1908,23 @@ void arpReadInput(unsigned long milliseconds)
           arpNotesHeld++;
         }
       }
-      
+
       // should the note be removed from the chord?
       if(!(uiHoldType & UI_HOLD_CHORD) && noteIndexInChord >= 0)
       {     
-        
+
         // shift higher notes down one position
         // to remove the released note
         for(i = noteIndexInChord;i < arpChordLength-1; ++i)
           arpChord[i] = arpChord[i+1];
-    
+
         // rebuild the sequence
         --arpChordLength;
-        arpRebuild = 1;
+        arpFlags |= ARP_FLAG_REBUILD;
       }
     }
   }
-   
+
   // check if the hold switch is released while
   // there are notes being held
   if(!(uiHoldType & UI_HOLD_CHORD) && !arpNotesHeld && arpChordLength)
@@ -1394,55 +1936,100 @@ void arpReadInput(unsigned long milliseconds)
 // RUN ARPEGGIATOR
 void arpRun(unsigned long milliseconds)
 {  
+  byte noteSet[16] = {0};
+  
   // update the chord based on user input
   arpReadInput(milliseconds);
-  
+
   // see if user has changed a setting that would mean the
   // sequence needs to be rebuilt
-  if(arpRebuild)
+  if(arpFlags & ARP_FLAG_REBUILD)
   {
     // rebuild the sequence 
     arpBuildSequence();                
-    arpRebuild = 0;
-    
+    arpFlags &= ~ARP_FLAG_REBUILD;
+
     // ensure that the receiving device gets the
     // initial note/channel on status for the arpeggio
     midiClearRunningStatus();
   }
-  
+
   // have we updated the play position?
   if(synchPlayAdvance && arpSequenceLength && arpPatternLength)
   {                 
-    // get the index into the arpeggio sequence
-    int sequenceIndex = synchPlayIndex % arpSequenceLength;
-
-    // and the index into the pattern
+    // get the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
-
-    // check there is a note not a rest at this 
-    // point in the pattern
-    if(arpPattern[arpPatternIndex])
+    
+    // check there is a note (not a rest at this) point in the pattern
+    if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
-      byte note = ARP_GET_NOTE(arpSequence[sequenceIndex]);
-      byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[sequenceIndex]);        
+      byte glide = 0;
+      byte newNote = 0;
+      if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
+        glide = 1;
+        
+      // Keep the sequence index within range      
+      if(arpSequenceIndex >= arpSequenceLength)
+        arpSequenceIndex = 0;
+      
+      // Loop to action play-through flag
+      byte playThru;
+      do {
+        
+        // check play thru flag
+        playThru = !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
+        
+        // Play the note if applicable
+        if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
+        {
+          byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
+          
+          // determine note velocity
+          byte velocity;          
+          if(arpFlags & ARP_FLAG_MUTE)
+            velocity = 0;
+          else if(arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
+            velocity = 127;
+          else
+            velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+    
+          // start the note playing
+          if(note > 0)
+          {
+            arpStartNote(note, velocity, milliseconds, noteSet);
+            newNote = 1;
+          }
+        }
+        
+        // next note
+        ++arpSequenceIndex;
+      } while(playThru && arpSequenceIndex < arpSequenceLength);
 
-      // start the note playing
-      if(note > 0)
-        midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);
-
-      // if the previous note is still playing then stop it
-      // (should be the case only for "tie" mode)
-      if(arpStopNote && arpStopNote != note)
+      // if the previous note is still playing when a new one is played
+      // then stop it (should be the case only for "tie" mode)
+      if(newNote)
       {
-        midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
+        arpStopNotes(milliseconds, noteSet);
       }
 
-      // need to work out the gate length for this note
-      arpStopNote = note;
-      if(arpGateLength)
+      // check if we need to "glide"
+      if(glide)
+      {
+        if(arpOptions & ARP_OPT_GLIDEMODE) 
+        {
+          // tie          
+          arpStopNoteTime = 0;
+        }
+        else
+        {
+          // full step
+          arpStopNoteTime = milliseconds + synchStepPeriod;
+        }
+      }
+      else if(arpGateLength)
       {              
-        // Set the stop period to occur after a certain
-        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
+        // work out the gate length for this note
+        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 150;
       }
       else
       {
@@ -1458,14 +2045,91 @@ void arpRun(unsigned long milliseconds)
   }
   // check if a note needs to be stopped.. either at end of playing or if there is no sequence
   // and we're in tied note mode
-  else if(arpStopNote && (
-  ((arpStopNoteTime && arpStopNoteTime < milliseconds) || 
-    (!arpStopNoteTime && !arpSequenceLength))))
+  else if((arpStopNoteTime && arpStopNoteTime < milliseconds) || 
+    (!arpStopNoteTime && !arpSequenceLength))
   {
-    // stop the ringing note
-    midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
-    arpStopNote = 0;
+    // stop the ringing notes
+    arpStopNotes(milliseconds, NULL);
     arpStopNoteTime = 0;
+  }
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//
+// PREFERENCES
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// LOAD USER PREFS
+void prefsInit()
+{
+  gPreferences = eepromGet(EEPROM_PREFS1); 
+  gPreferences<<=8;
+  gPreferences |= eepromGet(EEPROM_PREFS0); 
+  prefsApply();  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SAVE NEW PRFERENCES TO EEPROM
+void prefsSave()
+{
+  eepromSet(EEPROM_PREFS0,(gPreferences&0xFF));  
+  eepromSet(EEPROM_PREFS1,((gPreferences>>8)&0xFF));  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// APPLY PREFERENCES BITS TO VARIABLES
+void prefsApply()
+{
+  switch(gPreferences & PREF_LEDPROFILE)
+  {
+    case PREF_LEDPROFILE0:
+      uiLedBright = UI_LEDPROFILE0_HI;
+      uiLedMedium = UI_LEDPROFILE0_MED;
+      uiLedDim    = UI_LEDPROFILE0_LO;
+      break;
+    case PREF_LEDPROFILE1:
+      uiLedBright = UI_LEDPROFILE1_HI;
+      uiLedMedium = UI_LEDPROFILE1_MED;
+      uiLedDim    = UI_LEDPROFILE1_LO;
+      break;
+    case PREF_LEDPROFILE2:
+      uiLedBright = UI_LEDPROFILE2_HI;
+      uiLedMedium = UI_LEDPROFILE2_MED;
+      uiLedDim    = UI_LEDPROFILE2_LO;
+      break;
+    case PREF_LEDPROFILE3:
+      uiLedBright = UI_LEDPROFILE3_HI;
+      uiLedMedium = UI_LEDPROFILE3_MED;
+      uiLedDim    = UI_LEDPROFILE3_LO;
+      break;
+  }
+  
+  switch(gPreferences & PREF_LONGPRESS)
+  {
+    case PREF_LONGPRESS0:
+      uiLongHoldTime = UI_HOLD_TIME_0;
+      break;
+    case PREF_LONGPRESS1:
+      uiLongHoldTime = UI_HOLD_TIME_1;
+      break;
+    case PREF_LONGPRESS2:
+      uiLongHoldTime = UI_HOLD_TIME_2;
+      break;
+    case PREF_LONGPRESS3:
+      uiLongHoldTime = UI_HOLD_TIME_3;
+      break;
   }
 }
 
@@ -1513,7 +2177,8 @@ enum {
   EDIT_NO_PRESS = 0,
   EDIT_PRESS,        // button pressed
   EDIT_LONG_PRESS,   // button held for long hold threshold
-  EDIT_LONG_HOLD     // button held for more than long hold threshold
+  EDIT_LONG_HOLD,    // button held for more than long hold threshold
+  EDIT_LONG_RELEASED // was a long hold, now released
 };
 
 // current editing mode
@@ -1525,7 +2190,7 @@ unsigned long editRevertTime;
 // track when a menu button is held for a long period of time
 unsigned long editLongHoldTime;
 byte editPressType;
-
+byte editForceRefresh;
 unsigned long editTapTempoTime;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1534,7 +2199,8 @@ void editInit()
 {
   editMode = EDIT_MODE_PATTERN;
   editPressType = EDIT_NO_PRESS;
-  editRevertTime = 1;  // force a display refresh on startup
+  editForceRefresh = 1;  // force a display refresh on startup
+  editRevertTime = 0;
   editLongHoldTime = 0;
   editTapTempoTime = 0;
 }
@@ -1545,7 +2211,7 @@ void editPattern(char keyPress, byte forceRefresh)
 {
   if(keyPress != NO_VALUE)
   {
-    arpPattern[keyPress] = !arpPattern[keyPress];
+    arpPattern[keyPress] = (arpPattern[keyPress] ^ ARP_PATN_PLAY);
     forceRefresh = 1;
   }
 
@@ -1553,11 +2219,37 @@ void editPattern(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i)
-      uiLeds[i] = arpPattern[i] ? LED_MEDIUM : LED_OFF;
-      
+      uiLeds[i] = (arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+
     // only display the play position if we have a sequence
     if(arpSequenceLength)    
-      uiLeds[arpPatternIndex] = LED_BRIGHT;
+      uiLeds[arpPatternIndex] = uiLedBright;
+
+    // reset the flag
+    arpRefresh = 0;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// EDIT PATTERN EXTENDED
+void editPatternExt(char keyPress, byte forceRefresh)
+{
+  byte extBit = (arpOptions & ARP_OPT_PATNMODE2)? ARP_PATN_ACCENT : ARP_PATN_GLIDE;
+  if(keyPress != NO_VALUE)
+  {
+    arpPattern[keyPress] = (arpPattern[keyPress] ^ extBit);
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh || arpRefresh)
+  {    
+    // copy the leds
+    for(int i=0; i<16; ++i)
+      uiLeds[i] = (arpPattern[i] & extBit) ? uiLedMedium : 0;
+
+    // only display the play position if we have a sequence
+    if(arpSequenceLength)    
+      uiLeds[arpPatternIndex] = uiLedBright;
 
     // reset the flag
     arpRefresh = 0;
@@ -1578,8 +2270,8 @@ void editPatternLength(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {    
     uiClearLeds();
-    uiSetLeds(0, arpPatternLength, LED_DIM);
-    uiLeds[arpPatternLength-1] = LED_BRIGHT;
+    uiSetLeds(0, arpPatternLength, uiLedDim);
+    uiLeds[arpPatternLength-1] = uiLedBright;
   }
 }
 
@@ -1590,31 +2282,76 @@ void editArpType(char keyPress, byte forceRefresh)
   int i;
   switch(keyPress)
   {
-    case 0: case 1:  case 2:  case 3: case 4:
+  case 0: 
+  case 1:  
+  case 2:  
+  case 3: 
+  case 4:
+  case 5:
     arpType = keyPress;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
     break;
   case 13: 
     arpPatternLength = 8+random(8);
-    for(i = 0;i<16;++i) arpPattern[i] = random(2);
+    for(i = 0;i<16;++i) arpPattern[i] = random(2)? ARP_PATN_PLAY:0;
     break;
   case 14:
     for(i = 0;i<16;++i) arpPattern[i] = 0;
     arpPatternLength = 16;
     break;
   case 15:
-    for(i = 0;i<16;++i) arpPattern[i] = 1;
+    for(i = 0;i<16;++i) arpPattern[i] = ARP_PATN_PLAY;
     arpPatternLength = 16;
     break;
   } 
-  
+
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 5, LED_MEDIUM);
-    uiLeds[arpType] = LED_BRIGHT;
-    uiSetLeds(13, 3, LED_MEDIUM);
+    uiSetLeds(0, 6, uiLedMedium);
+    uiLeds[arpType] = uiLedBright;
+    uiSetLeds(13, 3, uiLedMedium);
+  }
+}
+
+/////////////////////////////////////////////////////
+// EDIT ARP OPTIONS
+void editArpOptions(char keyPress, byte forceRefresh)
+{
+  int i;
+  unsigned int b = (1<<(15-keyPress));
+  if(ARP_OPTS_MASK & b)
+  {
+    arpOptions^=b;
+    arpOptionsSave();
+    arpOptionsApply();
+    forceRefresh = 1;
+  } 
+
+  if(forceRefresh)
+  {
+    uiSetLeds(ARP_OPTS_MASK, arpOptions);
+  }
+}
+
+/////////////////////////////////////////////////////
+// EDIT PREFERENCES
+void editPreferences(char keyPress, byte forceRefresh)
+{
+  int i;
+  unsigned int b = (1<<(15-keyPress));
+  if(PREF_MASK & b)
+  {
+    gPreferences^=b;
+    prefsSave();
+    prefsApply();
+    forceRefresh = 1;
+  } 
+
+  if(forceRefresh)
+  {
+    uiSetLeds(PREF_MASK, gPreferences);
   }
 }
 
@@ -1625,16 +2362,16 @@ void editOctaveShift(char keyPress, byte forceRefresh)
   if(keyPress >= 0 && keyPress <= 6)
   {
     arpOctaveShift = keyPress - 3;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
 
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 7, LED_DIM);
-    uiLeds[3] = LED_MEDIUM;
-    uiLeds[3 + arpOctaveShift] = LED_BRIGHT;
+    uiSetLeds(0, 7, uiLedDim);
+    uiLeds[3] = uiLedMedium;
+    uiLeds[3 + arpOctaveShift] = uiLedBright;
   }
 }
 
@@ -1645,15 +2382,15 @@ void editOctaveSpan(char keyPress, byte forceRefresh)
   if(keyPress >= 0 && keyPress <= 3)
   {
     arpOctaveSpan = keyPress + 1;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
 
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 4, LED_DIM);
-    uiLeds[arpOctaveSpan - 1] = LED_BRIGHT;
+    uiSetLeds(0, 4, uiLedDim);
+    uiLeds[arpOctaveSpan - 1] = uiLedBright;
   }
 }
 
@@ -1687,18 +2424,18 @@ void editRate(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 13, LED_DIM);
-    uiLeds[0] = LED_MEDIUM;
-    uiLeds[2] = LED_MEDIUM;
-    uiLeds[5] = LED_MEDIUM;
-    uiLeds[8] = LED_MEDIUM;
-    uiLeds[11] = LED_MEDIUM;
-    uiLeds[13] = LED_MEDIUM;
+    uiSetLeds(0, 13, uiLedDim);
+    uiLeds[0] = uiLedMedium;
+    uiLeds[2] = uiLedMedium;
+    uiLeds[5] = uiLedMedium;
+    uiLeds[8] = uiLedMedium;
+    uiLeds[11] = uiLedMedium;
+    uiLeds[13] = uiLedMedium;
     for(int i=0; i<14; ++i)
     {
       if(synchPlayRate == rates[i]) 
       {
-        uiLeds[i] = LED_BRIGHT;
+        uiLeds[i] = uiLedBright;
         break;
       }
     }
@@ -1708,36 +2445,41 @@ void editRate(char keyPress, byte forceRefresh)
 
 /////////////////////////////////////////////////////
 // EDIT VELOCITY
-void editVelocity(char keyPress, byte forceRefresh, byte override)
+void editVelocity(char keyPress, byte forceRefresh)
 {
+  byte vel[16] = {0,9,17,26,34,43,51,60,68,77,85,94,102,111,119,127};    
+  if(keyPress == 0 && !arpVelocity && arpVelocityMode)
+  {    
+    arpVelocityMode = 0;
+    forceRefresh = 1;
+  }
+  else if(keyPress >= 0 && keyPress <= 15)
+  {    
+    arpVelocity = vel[keyPress];
+    arpVelocityMode = 1;
+    forceRefresh = 1;
+  }
 
-  if(!override)
+  if(forceRefresh)
   {
     uiClearLeds();
-    uiLeds[15] = LED_BRIGHT;
-  }  
-  else
-  {
-    if(keyPress > 0 && keyPress <= 15)
-    {    
-      arpVelocity = (keyPress+1) * 8 - 1;
-      forceRefresh = 1;
-    }
-    else if(0 == keyPress)
+    if(!arpVelocityMode) 
     {
-      arpVelocity = 0;
-      forceRefresh = 1;
+      // original velocity
+      uiLeds[0] = uiLedBright;
+      uiLeds[15] = uiLedBright;
     }
-  
-    if(forceRefresh)
+    else
     {
-      uiClearLeds();
-      int z = 0;
-      if(arpVelocity > 0)
-        z = (arpVelocity+1)/8 - 1;
-      uiSetLeds(0, z, LED_MEDIUM);
-      uiLeds[z] = LED_BRIGHT;
-    }  
+      for(int i=0; i<16; ++i)
+      {
+        if(arpVelocity <= vel[i]) {
+          uiLeds[i] = uiLedBright;
+          break;
+        }
+        uiLeds[i] = uiLedMedium;
+      }
+    }
   }
 }
 
@@ -1747,7 +2489,7 @@ void editGateLength(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 14)
   {    
-    arpGateLength = keyPress + 1;
+    arpGateLength = 10*(keyPress + 1);
     forceRefresh = 1;
   }
   else if(keyPress == 15)
@@ -1759,14 +2501,14 @@ void editGateLength(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     if(arpGateLength > 0)
-    {
-      uiSetLeds(0, arpGateLength, LED_MEDIUM);
-      uiLeds[arpGateLength - 1] = LED_BRIGHT;
+    {      
+      uiSetLeds(0, arpGateLength/10, uiLedMedium);
+      uiLeds[arpGateLength/10 - 1] = uiLedBright;
     }
     else
     {
-      uiSetLeds(0, 16, LED_MEDIUM);
-      uiLeds[15] = LED_BRIGHT;
+      uiSetLeds(0, 16, uiLedMedium);
+      uiLeds[15] = uiLedBright;
     }
   }    
 }
@@ -1805,21 +2547,21 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
-  else if(15 == keyPress)
+  else if(5 == keyPress)
   {    
-    midiOptions ^= MIDI_OPTS_FILTER_CC;
+    midiOptions ^= MIDI_OPTS_FILTER_CHMODE;
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
   if(forceRefresh)
   {
     uiClearLeds();
-    uiLeds[0] = !!(midiOptions&MIDI_OPTS_SEND_CHMSG)? LED_BRIGHT : LED_DIM;
-    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? LED_BRIGHT : LED_DIM;
-    uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? LED_BRIGHT : LED_DIM;
-    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? LED_BRIGHT : LED_DIM;
-    uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? LED_BRIGHT : LED_DIM;
-    uiLeds[15] = !!(midiOptions&MIDI_OPTS_FILTER_CC)? LED_BRIGHT : LED_DIM;
+    uiLeds[0] = !!(midiOptions&MIDI_OPTS_SEND_CHMSG)? uiLedBright : uiLedDim;
+    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? uiLedBright : uiLedDim;
+    uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? uiLedBright : uiLedDim;
+    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? uiLedBright : uiLedDim;
+    uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? uiLedBright : uiLedDim;
+    uiLeds[5] = !!(midiOptions&MIDI_OPTS_FILTER_CHMODE)? uiLedBright : uiLedDim;    
   }    
 }
 
@@ -1830,9 +2572,13 @@ void editInsertMode(char keyPress, byte forceRefresh)
   int i,j,note;
   switch(keyPress)
   {
-     case 0: case 1: case 2: case 3: case 4:  
+  case 0: 
+  case 1: 
+  case 2: 
+  case 3: 
+  case 4:  
     arpInsertMode = keyPress;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
     break;
   case 10:
@@ -1852,7 +2598,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
       }           
       arpChord[i] = ARP_MAKE_NOTE(note,64+random(64));
     }
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   case 11: // MIN7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -1860,7 +2606,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(58,127);
     arpChordLength = 4;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   case 12: // MAJ7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -1868,7 +2614,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(59,127);
     arpChordLength = 4;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   case 13: // DOM7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -1876,30 +2622,34 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(58,127);
     arpChordLength = 4;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   case 14: // MIN
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
-        arpChord[1] = ARP_MAKE_NOTE(51,127);       ;       
-        arpChord[2] = ARP_MAKE_NOTE(55,127);       ;       
+    arpChord[1] = ARP_MAKE_NOTE(51,127);       
+    ;       
+    arpChord[2] = ARP_MAKE_NOTE(55,127);       
+    ;       
     arpChordLength = 3;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   case 15: // MAJ
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
-        arpChord[1] = ARP_MAKE_NOTE(52,127);       ;       
-        arpChord[2] = ARP_MAKE_NOTE(55,127);       ;       
+    arpChord[1] = ARP_MAKE_NOTE(52,127);       
+    ;       
+    arpChord[2] = ARP_MAKE_NOTE(55,127);       
+    ;       
     arpChordLength = 3;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
     break;
   }
 
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 5, LED_DIM);
-    uiLeds[arpInsertMode] = LED_BRIGHT;
-    uiSetLeds(10, 6, LED_MEDIUM);
+    uiSetLeds(0, 5, uiLedDim);
+    uiLeds[arpInsertMode] = uiLedBright;
+    uiSetLeds(10, 6, uiLedMedium);
   }
 }
 
@@ -1911,27 +2661,37 @@ void editTempoSynch(char keyPress, byte forceRefresh)
   {
   case 0: // Toggle MIDI synch
     synchToMIDI = !synchToMIDI;
+    if(!synchToMIDI)
+      synchResynch();
     eepromSet(EEPROM_SYNCH_SOURCE, synchToMIDI);    
     forceRefresh = 1;
     break;
   case 1: // Toggle MIDI clock send
     if(synchSendMIDI)
     {
-      synchSendEvent |= SYNCH_SEND_STOP;
+      synchFlags |= SYNCH_SEND_STOP;
       synchSendMIDI = 0;
     }
     else
     {
-      synchSendEvent |= SYNCH_SEND_START;
-      synchSynchroniseSlaves = 1;      
+      synchFlags |= SYNCH_SEND_START;    // a start message will be sent to slaves
+      synchFlags |= SYNCH_RESET_NEXT_STEP_TIME; // need to reset internal counter to ensure synch with slave
+      synchFlags |= SYNCH_SEND_START;
       synchSendMIDI = 1;
-      synchRestart();
+      synchRestartSequence();
     }
     eepromSet(EEPROM_SYNCH_SEND, synchSendMIDI);    
     forceRefresh = 1;
     break;
-  case 3: case 4: case 5: case 6: case 7: 
-  case 8: case 9: case 10: case 11: 
+  case 3: 
+  case 4: 
+  case 5: 
+  case 6: 
+  case 7: 
+  case 8: 
+  case 9: 
+  case 10: 
+  case 11: 
     synchSetTempo(keyPress * 20);
     forceRefresh = 1;
     break;
@@ -1965,23 +2725,23 @@ void editTempoSynch(char keyPress, byte forceRefresh)
 
   if(forceRefresh)
   {
-    uiSetLeds(0,16,LED_OFF);      
+    uiSetLeds(0,16,0);      
     if(synchToMIDI)
     {
-      uiLeds[0] = LED_BRIGHT;
-      uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;                                                                                                                                                                                                                                                            
+      uiLeds[0] = uiLedBright;
+      uiLeds[1] = synchSendMIDI ? uiLedBright : uiLedMedium;                                                                                                                                                                                                                                                            
     }
     else
     {    
 #define BPM_METER(x,v) \
-      ((abs(v-x) <= 4)? LED_BRIGHT : \
-      ((abs(v-x) <= 11)? LED_MEDIUM : \
-      ((abs(v-x) <= 19)? LED_DIM : LED_OFF)))
-      
-        uiLeds[0] = LED_MEDIUM;
-      uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;
+      ((abs(v-x) <= 4)? uiLedBright : \
+      ((abs(v-x) <= 11)? uiLedMedium : \
+      ((abs(v-x) <= 19)? uiLedDim : 0)))
+
+        uiLeds[0] = uiLedMedium;
+      uiLeds[1] = synchSendMIDI ? uiLedBright : uiLedMedium;
       if(synchBPM <= 40) 
-        uiLeds[3] = LED_DIM;
+        uiLeds[3] = uiLedDim;
       else
         uiLeds[3] = BPM_METER(synchBPM,60);      
       uiLeds[4] = BPM_METER(synchBPM,80);
@@ -1992,12 +2752,12 @@ void editTempoSynch(char keyPress, byte forceRefresh)
       uiLeds[9] = BPM_METER(synchBPM,180);
       uiLeds[10] = BPM_METER(synchBPM,200);
       if(synchBPM >= 240) 
-        uiLeds[11] = LED_DIM;
+        uiLeds[11] = uiLedDim;
       else
         uiLeds[11] = BPM_METER(synchBPM,220);
-      uiLeds[13] = LED_BRIGHT;
-      uiLeds[14] = LED_BRIGHT;
-      uiLeds[15] = LED_BRIGHT;      
+      uiLeds[13] = uiLedBright;
+      uiLeds[14] = uiLedBright;
+      uiLeds[15] = uiLedBright;      
     }
   } 
 }
@@ -2008,11 +2768,8 @@ void editMidiOutputChannel(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 15)
   {
-    if((midiSendChannel != keyPress) && arpStopNote)
-    {
-      midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, millis());
-      arpStopNote = 0;
-    }
+    if(midiSendChannel != keyPress)
+      arpStopNotes(millis(), NULL);
     midiSendChannel = keyPress;
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     forceRefresh = 1;
@@ -2020,8 +2777,8 @@ void editMidiOutputChannel(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 16, LED_DIM);
-    uiLeds[midiSendChannel] = LED_BRIGHT;
+    uiSetLeds(0, 16, uiLedDim);
+    uiLeds[midiSendChannel] = uiLedBright;
   }
 }
 
@@ -2048,9 +2805,9 @@ void editMidiInputChannel(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     if(MIDI_OMNI == midiReceiveChannel)
-      uiSetLeds(0, 16, LED_BRIGHT);
+      uiSetLeds(0, 16, uiLedBright);
     else
-      uiLeds[midiReceiveChannel] = LED_BRIGHT;
+      uiLeds[midiReceiveChannel] = uiLedBright;
   }
 }
 
@@ -2063,16 +2820,99 @@ void editTranspose(char keyPress, byte forceRefresh)
   if(keyPress >= 0 && keyPress <= 15)
   {
     arpTranspose = keyPress - 3;
-    arpRebuild = 1;
+    arpFlags |= ARP_FLAG_REBUILD;
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiSetLeds(0, 16, uiLedDim);
+    uiLeds[3] = uiLedMedium;
+    if(arpTranspose >= -3 && arpTranspose < 13)
+      uiLeds[arpTranspose + 3] = uiLedBright;
+  }
+}
+
+/////////////////////////////////////////////////////
+// FORCE TO SCALE TYPE
+void editForceToScaleType(char keyPress, byte forceRefresh)
+{  
+  if(keyPress >= 0)
+  {
+    switch(keyPress)
+    {
+      case 0: arpForceToScaleMask |= ARP_SCALE_CHROMATIC; break;
+      case 1: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_IONIAN; break;
+      case 2: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_DORIAN; break;
+      case 3: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_PHRYGIAN; break;
+      case 4: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LYDIAN; break;
+      case 5: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_MIXOLYDIAN; break;
+      case 6: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_AEOLIAN; break;
+      case 7: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LOCRIAN; break;
+      
+      case 11: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SKIP; break;
+      case 12: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_MUTE; break;
+      case 13: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_FLAT; break;
+      case 14: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SHARP; break;
+      case 15: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_TOGGLE; break;
+    }
+    arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
   
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 16, LED_DIM);
-    uiLeds[3] = LED_MEDIUM;
-    uiLeds[arpTranspose + 3] = LED_BRIGHT;
+    uiSetLeds(0, 8, uiLedDim);
+    uiSetLeds(11, 5, uiLedDim);
+    uiLeds[0] = uiLedMedium;
+    uiLeds[14] = uiLedMedium;
+    switch(arpForceToScaleMask & ARP_SCALE_CHROMATIC)
+    {
+      case ARP_SCALE_CHROMATIC:  uiLeds[0] = uiLedBright; break;
+      case ARP_SCALE_IONIAN:     uiLeds[1] = uiLedBright; break;
+      case ARP_SCALE_DORIAN:     uiLeds[2] = uiLedBright; break;
+      case ARP_SCALE_PHRYGIAN:   uiLeds[3] = uiLedBright; break;
+      case ARP_SCALE_LYDIAN:     uiLeds[4] = uiLedBright; break;
+      case ARP_SCALE_MIXOLYDIAN: uiLeds[5] = uiLedBright; break;
+      case ARP_SCALE_AEOLIAN:    uiLeds[6] = uiLedBright; break;
+      case ARP_SCALE_LOCRIAN:    uiLeds[7] = uiLedBright; break;
+    }    
+    switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+    {
+      case ARP_SCALE_ADJUST_SKIP: uiLeds[11] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_MUTE: uiLeds[12] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_FLAT: uiLeds[13] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_SHARP: uiLeds[14] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_TOGGLE: uiLeds[15] = uiLedBright; break;
+    }    
+  }
+}
+
+/////////////////////////////////////////////////////
+// FORCE TO SCALE ROOT NOTE
+void editForceToScaleRoot(char keyPress, byte forceRefresh)
+{  
+  // 0123456789012345
+  // DDDOXXXXXXXXXXXX        
+  if(keyPress >= 0 && keyPress < 12)
+  {
+    arpForceToScaleRoot = keyPress;
+    arpFlags |= ARP_FLAG_REBUILD;
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiSetLeds(0, 12, uiLedDim);
+    uiLeds[1] = uiLedMedium;
+    uiLeds[3] = uiLedMedium;
+    uiLeds[6] = uiLedMedium;
+    uiLeds[8] = uiLedMedium;
+    uiLeds[10] = uiLedMedium;
+    uiLeds[arpForceToScaleRoot] = uiLedBright;
   }
 }
 
@@ -2080,7 +2920,8 @@ void editTranspose(char keyPress, byte forceRefresh)
 // EDIT RUN
 void editRun(unsigned long milliseconds)
 {
-  byte forceRefresh = 0;
+  byte forceRefresh = editForceRefresh;
+  editForceRefresh = 0;
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
@@ -2094,11 +2935,17 @@ void editRun(unsigned long milliseconds)
 
   // Capture any key pressed on the data entry keypad  
   char menuKeyPress = uiMenuKey;
-  if(menuKeyPress != NO_VALUE)
+  if(NO_VALUE == menuKeyPress)
   {
-      
+    // There is no key pressed, but previously we had a long hold
+    // so we remain "locked" until a key is pressed
+    if(EDIT_LONG_HOLD == editPressType)
+      editPressType = EDIT_LONG_RELEASED;
+  }
+  else
+  {
     uiMenuKey = NO_VALUE;
-    if(menuKeyPress != editMode)
+    if(menuKeyPress != editMode || EDIT_LONG_RELEASED == editPressType)
     {
       // change to a new edit mode, so 
       // screen needs to be refreshed
@@ -2116,7 +2963,7 @@ void editRun(unsigned long milliseconds)
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
     {
-      editLongHoldTime = milliseconds + UI_LONG_HOLD_TIME;
+      editLongHoldTime = milliseconds + uiLongHoldTime;
     }
     else if(milliseconds > editLongHoldTime)
     {
@@ -2137,47 +2984,64 @@ void editRun(unsigned long milliseconds)
   {
     editLongHoldTime = 0;
   }
-  
+
   // check if we timed out user input and should revert
   // to pattern edit mode  
   if(editRevertTime > 0 && editRevertTime < milliseconds)
   {
     // revert back to pattern edit mode
-    editMode = EDIT_MODE_PATTERN;
-    editRevertTime = 0;
+    if(gPreferences & PREF_AUTOREVERT)
+    {
+      editMode = EDIT_MODE_PATTERN;
+    }
     forceRefresh = 1;
+    editRevertTime = 0;
   }
-  
+
   // run the current edit mode
   switch(editMode)
   {
+  case EDIT_MODE_PATTERN:
+    if(editPressType >= EDIT_LONG_HOLD)
+      editPatternExt(dataKeyPress, forceRefresh);
+    else
+      editPattern(dataKeyPress, forceRefresh);
+    break;    
   case EDIT_MODE_PATTERN_LENGTH:
-    editPatternLength(dataKeyPress, forceRefresh);
+    if(editPressType >= EDIT_LONG_HOLD)
+      editPreferences(dataKeyPress, forceRefresh);
+    else
+      editPatternLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_ARP_TYPE:
-    editArpType(dataKeyPress, forceRefresh);
+    if(editPressType >= EDIT_LONG_HOLD)
+      editArpOptions(dataKeyPress, forceRefresh);
+    else
+      editArpType(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_OCTAVE_SHIFT:
-    editOctaveShift(dataKeyPress, forceRefresh);
+    if(editPressType >= EDIT_LONG_HOLD)
+      editForceToScaleRoot(dataKeyPress, forceRefresh);
+    else
+      editOctaveShift(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_OCTAVE_SPAN:
-    editOctaveSpan(dataKeyPress, forceRefresh);
+    if(editPressType >= EDIT_LONG_HOLD)
+      editForceToScaleType(dataKeyPress, forceRefresh);
+    else
+      editOctaveSpan(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_RATE:
     editRate(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_VELOCITY:
-    if(EDIT_LONG_PRESS == editPressType) {
-      arpVelocityMode = !arpVelocityMode;
-      forceRefresh = 1;
-    }
-    editVelocity(dataKeyPress, forceRefresh, arpVelocityMode);
+    editVelocity(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_GATE_LENGTH:
     editGateLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_INSERT:
-    if(EDIT_LONG_PRESS == editPressType)
+    if(editPressType == EDIT_LONG_PRESS)
     {
       arpClear();
       midiPanic();
@@ -2186,13 +3050,13 @@ void editRun(unsigned long milliseconds)
       editInsertMode(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TEMPO_SYNCH:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editMidiOptions(dataKeyPress, forceRefresh);
     else
       editTempoSynch(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_CHANNEL:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editMidiInputChannel(dataKeyPress, forceRefresh);
     else
       editMidiOutputChannel(dataKeyPress, forceRefresh);
@@ -2200,12 +3064,211 @@ void editRun(unsigned long milliseconds)
   case EDIT_MODE_TRANSPOSE:
     editTranspose(dataKeyPress, forceRefresh);
     break;        
-  case EDIT_MODE_PATTERN:
   default:
     editPattern(dataKeyPress, forceRefresh);
     break;   
   }    
 }    
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//
+// HACK HEADER IO
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Class to manage pot inputs
+class CPot 
+{
+  int value;
+  enum { 
+    TOLERANCE = 3,
+    UNKNOWN = -1,
+  };
+public:  
+  enum {
+    MAX_CC = 127,
+    TRANSPOSE,
+    TEMPO,
+    VELOCITY,
+    PITCHBEND,
+    GATELEN
+  };    
+  CPot() {
+    reset();
+  }
+  void reset() {
+    value = UNKNOWN;
+  }    
+  int endStops(int v)
+  {
+      if(v < TOLERANCE) 
+        return 0;
+      else if(v > 1023 - TOLERANCE) 
+        return 1023;
+      return v;
+  }
+  int centreDetent(int v)
+  {
+    const int range = 480;
+    const int top_of_low_band = range;
+    const int bottom_of_hi_band = 1023 - range;
+    if(v < top_of_low_band)
+      v = 512.0 * ((float)v/range);
+    else if(v > bottom_of_hi_band) 
+      v = 512 + 512.0 * (v-bottom_of_hi_band)/(float)range;
+    else 
+      v = 512;
+     return constrain(v,0,1023);
+  }
+  void run(int pin, byte controller, unsigned long milliseconds) {
+    int reading = analogRead(pin);
+    if(value == UNKNOWN) {
+      value = reading;
+    }
+    else if(abs(reading - value) > TOLERANCE) 
+    {
+      value = reading;
+      int v;
+      switch(controller) {
+        case TRANSPOSE:          
+          arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
+          arpFlags |= ARP_FLAG_REBUILD;
+          editForceRefresh = 1;
+          break;
+        case TEMPO:
+          v = endStops(value);
+          v = 30 + 250.0 * (v/1023.0);
+          synchSetTempo(v);
+          editForceRefresh = 1;
+          break;
+        case VELOCITY:
+          v = endStops(value);
+          arpVelocity = v/8;
+          arpVelocityMode = 1;
+          editForceRefresh = 1;
+          break;
+        case GATELEN:
+          v = endStops(value);
+          if(1023 == v)
+            arpGateLength = 0;
+          else if(v < 10)
+            arpGateLength = 1;
+          else
+            arpGateLength = 10 + (v*150.0)/1023.0;
+          editForceRefresh = 1;
+          break;
+        case PITCHBEND:
+          v = 16 * centreDetent(value);
+          midiWrite(MIDI_MK_PITCHBEND, v&0x7F, (v>>7)&0x7F, 2, milliseconds);          
+          break;
+        default:
+          v = endStops(value);
+          if(controller > 0 && controller <= MAX_CC)
+              midiWrite(MIDI_MK_CTRL_CHANGE, controller, v>>3, 2, milliseconds);
+          break;            
+      }      
+    }
+  }   
+};
+
+// Define three pot instances
+CPot Pot1;
+CPot Pot2;
+CPot Pot3;
+
+byte hhTime;   // stores divided ms just so we can check for ticks
+
+#define P_HH_POT_PC0 14
+#define P_HH_POT_PC4 18
+#define P_HH_POT_PC5 19
+#define P_HH_SW_PB3  11
+
+////////////////////////////////////////////////////////////////////////////////
+// Initialise hack header manager
+void hhInit() 
+{
+  if(IS_HH_POTS) {
+    pinMode(P_HH_SW_PB3,INPUT_PULLUP);
+    pinMode(P_HH_POT_PC5,INPUT);
+    pinMode(P_HH_POT_PC4,INPUT);
+    pinMode(P_HH_POT_PC0,INPUT);
+  }
+  Pot1.reset();
+  Pot2.reset();
+  Pot3.reset();
+  hhTime = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Run hack header manager
+void hhRun(unsigned long milliseconds)
+{      
+  // enforce a minimum period of 16ms between I/O polls
+  if((byte)(milliseconds>>4) == hhTime)
+    return;
+  hhTime = (byte)(milliseconds>>4); 
+  arpFlags &= ~ARP_FLAG_MUTE;
+  synchFlags &= ~SYNCH_HOLD_AT_ZERO;
+
+  if(IS_HH_POTS)
+  {
+      switch(gPreferences & PREF_HHPOT_PC5)
+      {
+      case PREF_HHPOT_PC5_MOD:
+         Pot1.run(5, 1, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_TRANS:
+         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_CC:
+         Pot1.run(5, HH_CC_PC5, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC4)
+      {
+      case PREF_HHPOT_PC4_VEL:
+         Pot2.run(4, CPot::VELOCITY, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_PB:
+         Pot2.run(4, CPot::PITCHBEND, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_CC:
+         Pot2.run(4, HH_CC_PC4, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC0)
+      {
+      case PREF_HHPOT_PC0_TEMPO:
+         Pot3.run(0, CPot::TEMPO, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_GATE:
+         Pot3.run(0, CPot::GATELEN, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_CC:
+         Pot3.run(0, HH_CC_PC0, milliseconds);
+         break;
+      }
+
+      if(!!(gPreferences & PREF_HHSW_PB3)) {        
+         if(!digitalRead(P_HH_SW_PB3)) {
+           synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+         }           
+      }
+      else {
+         if(!digitalRead(P_HH_SW_PB3))
+           arpFlags |= ARP_FLAG_MUTE;
+      }
+  }    
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -2251,6 +3314,9 @@ void heartbeatRun(unsigned long milliseconds)
 ////////////////////////////////////////////////////////////////////////////////
 void setup() {                
 
+  // Load user preferences  
+  prefsInit();
+  
   midiInit();
   arpInit();
   heartbeatInit();
@@ -2262,28 +3328,42 @@ void setup() {
   synchInit();
   uiInit();     
   sei();  
-
+  
+  // init hack header
+  hhInit();
+  
   // pressing hold switch at startup shows UI version
   uiShowVersion();
-  
+
   // reset default EEPROM settings
-  if(uiMenuKey == UI_KEY_C1)
+  if(uiMenuKey == UI_KEY_C1 || (eepromGet(EEPROM_MAGIC_COOKIE) != EEPROM_MAGIC_COOKIE_VALUE))
   {
     midiSendChannel = 0;
     midiReceiveChannel = MIDI_OMNI;
     midiOptions = MIDI_OPTS_DEFAULT_VALUE;
     synchToMIDI = 0; 
     synchSendMIDI = 0; 
-    
+    gPreferences = 
+      PREF_AUTOREVERT | 
+      PREF_LONGPRESS2 | 
+      PREF_LEDPROFILE2;
+    arpOptions = 
+      ARP_OPT_SKIPONREST|ARP_OPT_GLIDEMODE;
+  
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
     eepromSet(EEPROM_MIDI_OPTS, MIDI_OPTS_DEFAULT_VALUE);
     eepromSet(EEPROM_SYNCH_SOURCE,synchToMIDI);
-    eepromSet(EEPROM_SYNCH_SEND,synchSendMIDI);
+    eepromSet(EEPROM_SYNCH_SEND,synchSendMIDI);  
+    prefsSave();
+    prefsApply();
+    arpOptionsSave();
+    arpOptionsApply();
+    eepromSet(EEPROM_MAGIC_COOKIE,EEPROM_MAGIC_COOKIE_VALUE);  
     
-    uiSetLeds(0, 16, LED_BRIGHT);
-    delay(500);
-
+    uiSetLeds(0, 16, uiLedBright);
+    delay(1000);
+    editForceRefresh = 1;
   }  
 }
 
@@ -2296,13 +3376,14 @@ void setup() {
 ////////////////////////////////////////////////////////////////////////////////
 void loop() 
 {
-  unsigned long millseconds = millis();
-  
-  synchRun(millseconds);
-  arpRun(millseconds);
-  heartbeatRun(millseconds);
-  uiRun(millseconds);
-  editRun(millseconds);   
+  unsigned long milliseconds = millis();
+  synchRun(milliseconds);
+  arpRun(milliseconds);
+  heartbeatRun(milliseconds);
+  uiRun(milliseconds);
+  editRun(milliseconds);   
+  hhRun(milliseconds);
 }
 
 //EOF
+
