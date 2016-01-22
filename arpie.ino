@@ -20,9 +20,8 @@
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
 //    1.07  16Nov14  Revert to primary menu function, glide mode
 //    A4    Feb2015  New release version
-//    A5    XXXXXXX  CVTab support
 //
-#define VERSION_HI  5
+#define VERSION_HI  4
 #define VERSION_LO  0
 
 //
@@ -30,7 +29,6 @@
 //
 #include <avr/interrupt.h>  
 #include <avr/io.h>
-#include <Wire.h>
 #include <EEPROM.h>
 
 // Midi CC numbers to associate with hack header inputs
@@ -53,8 +51,6 @@ enum {
   PREF_HHTYPE_POTS=      (unsigned int)0b0000000000000000,
   
   PREF_HH_SYNCHTAB=      (unsigned int)0b1000000000000000,
-  PREF_HH_CVTABNOTE=     (unsigned int)0b1000001000000000,
-  PREF_HH_CVTABVEL=      (unsigned int)0b1000001100000000,
 
   PREF_HHSW_PB3=         (unsigned int)0b0100000000000000,
  
@@ -89,32 +85,15 @@ enum {
   
   PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
+#define IS_HH_CLOCK  ((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
+#define IS_HH_POTS   ((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
+
 
 // The preferences word
 unsigned int gPreferences;
 
 // Forward declare the UI refresh flag
 extern byte editForceRefresh;
-
-////////////////////////////////////////////////////////////////////////////////
-//
-//
-//
-// HACK HEADER DRIVER
-// Define interface for drivers for hack header extensions
-//
-//
-//
-////////////////////////////////////////////////////////////////////////////////
-class IHackHeaderDriver {
-public:
-  virtual void init() = 0;                  // called once at initialisation
-  virtual void run(unsigned long ms) = 0;   // called periodically
-  virtual void onClock(byte on) = 0;        // called when internal pulse clock "ticks"
-  virtual void onStartNote(byte note, byte velocity) = 0;
-  virtual void onStopNote() = 0;
-};
-IHackHeaderDriver *g_HH = NULL;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -850,6 +829,22 @@ byte synchClockSendStateTimer;                 // used to detect change in ms
 
 #define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
 
+// Define pins used for the hack header
+#define P_SYNCH_HH_DETECT                19
+#define P_SYNCH_HH_CLKOUT                18  
+#define P_SYNCH_HH_CLKIN                 14
+#if SYNCH_HH_CLOCK_ACTIVELOW    
+  #define SYNCH_HH_CLOCK_ON           PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_OFF          PORTC |= (1<<4)
+#else
+  #define SYNCH_HH_CLOCK_OFF          PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_ON           PORTC |= (1<<4)
+#endif
+#define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
+#define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
+#define SYNCH_HH_ENABLE_PCINT         (PCMSK1 |= (1<<0))
+#define SYNCH_HH_DISABLE_PCINT        (PCMSK1 &= ~(1<<0))
+
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
 #define P_SYNCH_TICK     2
 #define P_SYNCH_RESTART  3
@@ -948,7 +943,8 @@ void synchTick(byte source)
   if(synchSendMIDI)
     synchTicksToSend++;
     
-  synchPulseClockTickCount++;
+  if(IS_HH_CLOCK)
+    synchPulseClockTickCount++;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1023,7 +1019,7 @@ ISR(synchTick_ISR)
 //////////////////////////////////////////////////////////////////////////
 ISR(PCINT1_vect)
 {
-  if(PINC & PCMSK1)  // rising edge
+  if(SYCH_HH_CLOCK_IN)  // rising edge
   {
     unsigned long ms = millis();
     if(synchLastPulseClockTime && synchLastPulseClockTime < ms)
@@ -1094,7 +1090,24 @@ void synchInit()
   synchLastPulseClockTime  = 0;
   synchThisPulseClockPeriod = 0;         
   synchInternalTicksSinceLastPulseClock = 0;
-
+  
+  if(IS_HH_CLOCK) {
+     pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
+     pinMode(P_SYNCH_HH_CLKIN, INPUT);
+     pinMode(P_SYNCH_HH_DETECT, INPUT_PULLUP);
+     delay(10);
+     if(SYNCH_HH_INPUT_DETECT) 
+     {    
+       synchClockSendState = SYNCH_HH_EXT_CLOCK;  // disable clock output
+       PCICR |= (1<<1);                           // enable pin change interrupt 1
+       PCMSK1 = 0;                                // initially all pins disabled for PC interrupt
+       SYNCH_HH_ENABLE_PCINT;                     // PCINT enabled on input pin 
+     }
+     else
+     {
+       SYNCH_HH_DISABLE_PCINT;                    // no pin change interrupt
+     } 
+  }
   interrupts();
 }
 
@@ -1188,7 +1201,7 @@ void synchRun(unsigned long milliseconds)
       if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
       {
         // start a new pulse
-        if(g_HH) g_HH->onClock(1);
+        SYNCH_HH_CLOCK_ON;
         synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
         synchClockSendState = 1;
       }
@@ -1201,9 +1214,8 @@ void synchRun(unsigned long milliseconds)
       if(synchClockSendState >= SYNCH_CLOCK_MIN_PERIOD)
         synchClockSendState = 0;
   
-      if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH) {
-        if(g_HH) g_HH->onClock(0);
-      }
+      if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH)
+        SYNCH_HH_CLOCK_OFF;
     }
   }
   ///////////////////////////////////////////////////////
@@ -1429,7 +1441,7 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
 // Stop all currently playing notes. If a "note set" is provided then any notes
 // present in it are left alone and remain playing
 void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
-{   
+{ 
   for(int i=0; i<16; ++i)  
   {
     if(arpPlayingNotes[i])
@@ -1953,7 +1965,6 @@ void arpRun(unsigned long milliseconds)
     {
       byte glide = 0;
       byte newNote = 0;
-      byte newNoteVelocity = 0;
       if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
         glide = 1;
         
@@ -1986,8 +1997,7 @@ void arpRun(unsigned long milliseconds)
           if(note > 0)
           {
             arpStartNote(note, velocity, milliseconds, noteSet);
-            newNote = note;
-            newNoteVelocity = velocity;
+            newNote = 1;
           }
         }
         
@@ -1999,9 +2009,6 @@ void arpRun(unsigned long milliseconds)
       // then stop it (should be the case only for "tie" mode)
       if(newNote)
       {
-        if(g_HH) {
-          g_HH->onStartNote(newNote, newNoteVelocity);
-        }
         arpStopNotes(milliseconds, noteSet);
       }
 
@@ -2041,10 +2048,7 @@ void arpRun(unsigned long milliseconds)
   else if((arpStopNoteTime && arpStopNoteTime < milliseconds) || 
     (!arpStopNoteTime && !arpSequenceLength))
   {
-    if(g_HH) {
-        g_HH->onStopNote();
-    }
-    // stop the ringing notes    
+    // stop the ringing notes
     arpStopNotes(milliseconds, NULL);
     arpStopNoteTime = 0;
   }
@@ -3077,24 +3081,13 @@ void editRun(unsigned long milliseconds)
 //
 //
 //
-// HACK HEADER DRIVERS
-//
-// Classes implementing IHackHeaderDriver
+// HACK HEADER IO
 //
 //
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
 //
-// CONTROL TAB DRIVER
 //
 ////////////////////////////////////////////////////////////////////////////////
-
-#define P_HH_POT_PC0 14
-#define P_HH_POT_PC4 18
-#define P_HH_POT_PC5 19
-#define P_HH_SW_PB3  11
+////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
 // Class to manage pot inputs
@@ -3192,267 +3185,94 @@ public:
   }   
 };
 
+// Define three pot instances
+CPot Pot1;
+CPot Pot2;
+CPot Pot3;
+
+byte hhTime;   // stores divided ms just so we can check for ticks
+
+#define P_HH_POT_PC0 14
+#define P_HH_POT_PC4 18
+#define P_HH_POT_PC5 19
+#define P_HH_SW_PB3  11
+
 ////////////////////////////////////////////////////////////////////////////////
-// The actual driver class
-class CControlTabDriver : public IHackHeaderDriver {
-  CPot Pot1;
-  CPot Pot2;
-  CPot Pot3;
-  byte hhTime;   // stores divided ms just so we can check for ticks
-  void init() {
+// Initialise hack header manager
+void hhInit() 
+{
+  if(IS_HH_POTS) {
     pinMode(P_HH_SW_PB3,INPUT_PULLUP);
     pinMode(P_HH_POT_PC5,INPUT);
     pinMode(P_HH_POT_PC4,INPUT);
     pinMode(P_HH_POT_PC0,INPUT);
-    Pot1.reset();
-    Pot2.reset();
-    Pot3.reset();
-    hhTime = 0;
   }
-  void run(unsigned long ms) {
-    // enforce a minimum period of 16ms between I/O polls
-    if((byte)(ms>>4) == hhTime)
-      return;
-    hhTime = (byte)(ms>>4); 
-    arpFlags &= ~ARP_FLAG_MUTE;
-    synchFlags &= ~SYNCH_HOLD_AT_ZERO;
-
-    switch(gPreferences & PREF_HHPOT_PC5)
-    {
-    case PREF_HHPOT_PC5_MOD:
-       Pot1.run(5, 1, ms);
-       break;
-    case PREF_HHPOT_PC5_TRANS:
-       Pot1.run(5, CPot::TRANSPOSE, ms);
-       break;
-    case PREF_HHPOT_PC5_CC:
-       Pot1.run(5, HH_CC_PC5, ms);
-       break;
-    }
-    switch(gPreferences & PREF_HHPOT_PC4)
-    {
-    case PREF_HHPOT_PC4_VEL:
-       Pot2.run(4, CPot::VELOCITY, ms);
-       break;
-    case PREF_HHPOT_PC4_PB:
-       Pot2.run(4, CPot::PITCHBEND, ms);
-       break;
-    case PREF_HHPOT_PC4_CC:
-       Pot2.run(4, HH_CC_PC4, ms);
-       break;
-    }
-    switch(gPreferences & PREF_HHPOT_PC0)
-    {
-    case PREF_HHPOT_PC0_TEMPO:
-       Pot3.run(0, CPot::TEMPO, ms);
-       break;
-    case PREF_HHPOT_PC0_GATE:
-       Pot3.run(0, CPot::GATELEN, ms);
-       break;
-    case PREF_HHPOT_PC0_CC:
-       Pot3.run(0, HH_CC_PC0, ms);
-       break;
-    }
-
-    if(!!(gPreferences & PREF_HHSW_PB3)) {        
-       if(!digitalRead(P_HH_SW_PB3)) {
-         synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
-       }           
-    }
-    else {
-       if(!digitalRead(P_HH_SW_PB3))
-         arpFlags |= ARP_FLAG_MUTE;
-    }
-  }
-  void onClock(byte on) {}
-  void onStartNote(byte note, byte velocity) {}
-  void onStopNote() {}   
-};
+  Pot1.reset();
+  Pot2.reset();
+  Pot3.reset();
+  hhTime = 0;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-//
-// SYNCH TAB DRIVER
-//
-////////////////////////////////////////////////////////////////////////////////
+// Run hack header manager
+void hhRun(unsigned long milliseconds)
+{      
+  // enforce a minimum period of 16ms between I/O polls
+  if((byte)(milliseconds>>4) == hhTime)
+    return;
+  hhTime = (byte)(milliseconds>>4); 
+  arpFlags &= ~ARP_FLAG_MUTE;
+  synchFlags &= ~SYNCH_HOLD_AT_ZERO;
 
-/*
-  pin 14 - pulse clock in
-  pin 18 - pulse clock out
-  pin 19 - detect plug present on input socket
-*/
-class CSynchTabDriver : public IHackHeaderDriver {
-public:  
-  void init() {
-     pinMode(18, OUTPUT);
-     pinMode(14, INPUT);
-     pinMode(19, INPUT_PULLUP);
-     delay(10);
-     if(!(PINC & (1<<5))) // PC5 pulled low means synchtab present
-     {    
-       synchClockSendState = SYNCH_HH_EXT_CLOCK;  // disable clock output
-       PCICR |= (1<<1);                           // enable pin change interrupt 1
-       PCMSK1 = 0;                                // initially all pins disabled for PC interrupt
-       PCMSK1 |= (1<<0);                          // PCINT enabled on input pin 
-     }
-     else
-     {
-       PCMSK1 = 0;                           // no pin change interrupt
-//       synchFlags |= SYNCH_SEND_PULSE_CLOCK;
-     } 
-  }
-  void run(unsigned long ms) {
-  }
-  void onClock(byte on) {
-    if(on) {
-#if SYNCH_HH_CLOCK_ACTIVELOW    
-  PORTB &= ~(1<<3);
-#else
-  PORTB |= (1<<3);
-#endif
-    }
-    else {
-#if SYNCH_HH_CLOCK_ACTIVELOW    
-  PORTB |= (1<<3);
-#else
-  PORTB &= ~(1<<3);
-#endif
-    }
-  }
-  void onStartNote(byte note, byte velocity) {}
-  void onStopNote() {}   
-};
-
-
-////////////////////////////////////////////////////////////////////////////////
-//
-// CV TAB DRIVER
-//
-////////////////////////////////////////////////////////////////////////////////
-/*
-    The template parameter determines if the CV is controlled by note 
-    pitch(false) or note velocity(true)
-    
-    11  PB3 clkout
-    14  PC0 gateout
-*/
-template<boolean VEL_MODE> 
-class CCVTabDriver : public IHackHeaderDriver {
-public:  
-  ////////////////////////////////////////////////////////////////////////
-  void init() {
-     Wire.begin();
-     pinMode(11, OUTPUT);
-     pinMode(14, OUTPUT);
-  }
-
-  ////////////////////////////////////////////////////////////////////////
-  void run(unsigned long ms) {
-  }
-
-  ////////////////////////////////////////////////////////////////////////
-  void onClock(byte on) {
-    if(on) {
-#if SYNCH_HH_CLOCK_ACTIVELOW    
-  PORTB &= ~(1<<3);
-#else
-  PORTB |= (1<<3);
-#endif
-    }
-    else {
-#if SYNCH_HH_CLOCK_ACTIVELOW    
-  PORTB |= (1<<3);
-#else
-  PORTB &= ~(1<<3);
-#endif
-    }
-  }
-
-  ////////////////////////////////////////////////////////////////////////
-  void onStartNote(byte note, byte velocity) {
-
-    int dac_output;
-    
-    if(VEL_MODE) {
-      // CV output based on MIDI velocity
-      dac_output = 4095.0 * (velocity/127.0);
-    }
-    else {
-      // the CV output has only a 5V/5Oct range which is mapped to 
-      // MIDI notes 24-84. Notes outside this range are forced into
-      // this range by octave transposition
-      while(note < 24) {
-        note+=12;
+  if(IS_HH_POTS)
+  {
+      switch(gPreferences & PREF_HHPOT_PC5)
+      {
+      case PREF_HHPOT_PC5_MOD:
+         Pot1.run(5, 1, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_TRANS:
+         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_CC:
+         Pot1.run(5, HH_CC_PC5, milliseconds);
+         break;
       }
-      while(note > 84) {
-        note-=12;
+      switch(gPreferences & PREF_HHPOT_PC4)
+      {
+      case PREF_HHPOT_PC4_VEL:
+         Pot2.run(4, CPot::VELOCITY, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_PB:
+         Pot2.run(4, CPot::PITCHBEND, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_CC:
+         Pot2.run(4, HH_CC_PC4, milliseconds);
+         break;
       }
-      
-      // calculate the 12-bit value to load into the DAC. The DAC
-      // has an almost rail to rail output (0 - 4.97V) but cannot
-      // quite make it to the +5V rail...
-#define HH_CV_MAX 4.97 // Highest output from DAC
-      dac_output = 4095.0 * (note-24.0)/(60.0 * HH_CV_MAX/5.0);
-    }
-    
-    // Make sure we constrain the dac output to the 0-4095 range
-    if(dac_output<0) {
-        dac_output=0;
-    }
-    if(dac_output>4095) {
-      dac_output=4095;
-    }
-    
-    // Make the I2C transmission to the DAC
-    Wire.beginTransmission(0b1100000);   // I2C address of the MCP4706 DAC
-    Wire.write((dac_output>>8) & 0x0F);  // bits 8-11
-    Wire.write(dac_output & 0xFF);       // bits 0-7
-    Wire.endTransmission();      
+      switch(gPreferences & PREF_HHPOT_PC0)
+      {
+      case PREF_HHPOT_PC0_TEMPO:
+         Pot3.run(0, CPot::TEMPO, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_GATE:
+         Pot3.run(0, CPot::GATELEN, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_CC:
+         Pot3.run(0, HH_CC_PC0, milliseconds);
+         break;
+      }
 
-    // Gate signal HIGH
-    PORTC |= (1<<0);
-    
-  }
-  
-  ////////////////////////////////////////////////////////////////////////
-  void onStopNote() {
-    // Gate signal LOW
-    PORTC &= ~(1<<0);
-  }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-//
-//
-//
-// HACK HEADER
-//
-//
-//
-////////////////////////////////////////////////////////////////////////////////
-void hhInit() 
-{
-  if(g_HH) {
-    delete g_HH;
-    g_HH = NULL;
-  }
-  
-  if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB) {
-    g_HH = new CSynchTabDriver();
-  }  
-  else if((gPreferences & PREF_HACKHEADER) == PREF_HH_CVTABNOTE) {
-    g_HH = new CCVTabDriver<false>();
-  }  
-  else if((gPreferences & PREF_HACKHEADER) == PREF_HH_CVTABVEL) {
-    g_HH = new CCVTabDriver<true>();
-  }  
-  else if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS) {
-    g_HH = new CControlTabDriver();
-  }
-  
-  // initialise the driver if present
-  if(g_HH) {
-    g_HH->init();
-  }
+      if(!!(gPreferences & PREF_HHSW_PB3)) {        
+         if(!digitalRead(P_HH_SW_PB3)) {
+           synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+         }           
+      }
+      else {
+         if(!digitalRead(P_HH_SW_PB3))
+           arpFlags |= ARP_FLAG_MUTE;
+      }
+  }    
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3567,9 +3387,7 @@ void loop()
   heartbeatRun(milliseconds);
   uiRun(milliseconds);
   editRun(milliseconds);   
-  if(g_HH) {
-    g_HH->run(milliseconds);
-  }
+  hhRun(milliseconds);
 }
 
 //EOF
