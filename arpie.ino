@@ -20,9 +20,10 @@
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
 //    1.07  16Nov14  Revert to primary menu function, glide mode
 //    A4    Feb2015  New release version
+//    XXXX  Working on changes
 //
-#define VERSION_HI  4
-#define VERSION_LO  0
+#define VERSION_HI  7
+#define VERSION_LO  7
 
 //
 // INCLUDE FILES
@@ -93,7 +94,11 @@ enum {
 unsigned int gPreferences;
 
 // Forward declare the UI refresh flag
-extern byte editForceRefresh;
+#define EDIT_FLAG_FORCE_REFRESH 0x01
+#define EDIT_FLAG_IS_HELD       0x02
+#define EDIT_FLAG_IS_NEW        0x04
+extern byte editFlags;
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -1044,7 +1049,7 @@ void synchSetInternalTickPeriod(float period)
   if(synchBPM != bpm)
   {
     synchBPM = bpm;
-    editForceRefresh = 1;
+    editFlags |= EDIT_FLAG_FORCE_REFRESH;
   }
 }
 void synchResynch() 
@@ -1321,6 +1326,9 @@ int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
 char arpChordRootNote;
 
+// Manual chord selected by the user
+unsigned int arpManualChord;
+
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
 unsigned int arpSequence[ARP_MAX_SEQUENCE];
 int arpSequenceLength;     // number of notes in the sequence
@@ -1340,6 +1348,12 @@ unsigned long arpStopNoteTime;
 
 // used to time the length of a step
 unsigned long arpLastPlayAdvance;
+
+#define ARP_MAX_TRAN_SEQ 16
+char arpTransposeSequence[ARP_MAX_TRAN_SEQ];
+byte arpTransposeSequenceLen;
+byte arpTransposeSequencePos;
+unsigned int arpTransposeSequenceMask;
 
 enum {
   ARP_FLAG_REBUILD = 0x01,
@@ -1409,6 +1423,10 @@ void arpInit()
   arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
   arpChordRootNote = -1;
   arpSequenceIndex = 0;
+  arpManualChord = 0;
+  arpTransposeSequenceLen = 0;
+  arpTransposeSequencePos = 0;
+  arpTransposeSequenceMask = 0;
   arpOptionsLoad();
   
   // the pattern starts with all beats on
@@ -1471,6 +1489,8 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
 void arpClear()
 {
   arpChordLength = 0;
+  arpManualChord = 0;
+  editFlags |= EDIT_FLAG_FORCE_REFRESH;
   arpFlags |= ARP_FLAG_REBUILD;
 }
 
@@ -1832,7 +1852,7 @@ void arpReadInput(unsigned long milliseconds)
          {
             arpTranspose = note - arpChordRootNote;                        
             arpFlags |= ARP_FLAG_REBUILD;
-            editForceRefresh = 1;
+            editFlags |= EDIT_FLAG_FORCE_REFRESH;
          }
        }
       }
@@ -1931,6 +1951,21 @@ void arpReadInput(unsigned long milliseconds)
     arpClear();
 }
 
+void arpSetManualChord()
+{
+  arpChordLength = 0;
+  arpNotesHeld = 0;  
+  unsigned int m=1;
+  for(int i=0; i<16; ++i) {
+     if((arpManualChord & m) && (arpChordLength < ARP_MAX_CHORD-1))
+     {        
+       arpChord[arpChordLength] = ARP_MAKE_NOTE(48+i,127);
+       arpChordLength++;
+     }
+     m<<=1;
+  }
+  arpFlags |= ARP_FLAG_REBUILD;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // RUN ARPEGGIATOR
@@ -1959,6 +1994,17 @@ void arpRun(unsigned long milliseconds)
   {                 
     // get the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
+    
+    // Check if we need to transpose
+    if(!arpPatternIndex && arpTransposeSequenceLen) {
+      arpTranspose = arpTransposeSequence[arpTransposeSequencePos];
+      arpBuildSequence();                
+      midiClearRunningStatus();
+      if(++arpTransposeSequencePos >= arpTransposeSequenceLen) {
+        arpTransposeSequencePos = 0;
+      }      
+      editFlags |= EDIT_FLAG_FORCE_REFRESH;
+    }
     
     // check there is a note (not a rest at this) point in the pattern
     if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
@@ -2190,7 +2236,7 @@ unsigned long editRevertTime;
 // track when a menu button is held for a long period of time
 unsigned long editLongHoldTime;
 byte editPressType;
-byte editForceRefresh;
+byte editFlags;
 unsigned long editTapTempoTime;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2199,7 +2245,7 @@ void editInit()
 {
   editMode = EDIT_MODE_PATTERN;
   editPressType = EDIT_NO_PRESS;
-  editForceRefresh = 1;  // force a display refresh on startup
+  editFlags = EDIT_FLAG_FORCE_REFRESH;
   editRevertTime = 0;
   editLongHoldTime = 0;
   editTapTempoTime = 0;
@@ -2573,7 +2619,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
 // EDIT NOTE INSERT MODE
 void editInsertMode(char keyPress, byte forceRefresh)
 {
-  int i,j,note;
+  int i,j,note,newChord=0;
   switch(keyPress)
   {
   case 0: 
@@ -2602,7 +2648,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
       }           
       arpChord[i] = ARP_MAKE_NOTE(note,64+random(64));
     }
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   case 11: // MIN7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -2610,7 +2656,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(58,127);
     arpChordLength = 4;
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   case 12: // MAJ7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -2618,7 +2664,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(59,127);
     arpChordLength = 4;
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   case 13: // DOM7
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
@@ -2626,28 +2672,29 @@ void editInsertMode(char keyPress, byte forceRefresh)
     arpChord[2] = ARP_MAKE_NOTE(55,127);
     arpChord[3] = ARP_MAKE_NOTE(58,127);
     arpChordLength = 4;
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   case 14: // MIN
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
     arpChord[1] = ARP_MAKE_NOTE(51,127);       
-    ;       
     arpChord[2] = ARP_MAKE_NOTE(55,127);       
-    ;       
     arpChordLength = 3;
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   case 15: // MAJ
     arpChord[0] = ARP_MAKE_NOTE(48,127);       
     arpChord[1] = ARP_MAKE_NOTE(52,127);       
-    ;       
     arpChord[2] = ARP_MAKE_NOTE(55,127);       
-    ;       
     arpChordLength = 3;
-    arpFlags |= ARP_FLAG_REBUILD;
+    newChord = 1;
     break;
   }
 
+  if(newChord) {
+    arpManualChord = 0;
+    arpFlags |= ARP_FLAG_REBUILD;
+    uiHoldType |= UI_HOLD_CHORD;
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2655,6 +2702,34 @@ void editInsertMode(char keyPress, byte forceRefresh)
     uiLeds[arpInsertMode] = uiLedBright;
     uiSetLeds(10, 6, uiLedMedium);
   }
+}
+
+
+void editManualChord(char keyPress, byte forceRefresh) 
+{
+  
+  if(keyPress >= 0 && keyPress < 16) {
+    arpManualChord ^= (1<<keyPress);
+    arpSetManualChord();
+    forceRefresh = 1;
+    uiHoldType |= UI_HOLD_CHORD;
+  }
+  
+  if(forceRefresh)
+  {
+    unsigned int m = 1;
+    for(int i=0; i<16; ++i) {
+      switch(i) {
+        case 0: case 2: case 4: case 5: case 7: case 9: case 11: case 12: case 14:
+          uiLeds[i] = (arpManualChord & m) ? uiLedBright:uiLedMedium;
+          break;
+        default:
+          uiLeds[i] = (arpManualChord & m) ? uiLedBright:uiLedDim;
+          break;
+      }
+      m<<=1;
+    }      
+  }  
 }
 
 /////////////////////////////////////////////////////
@@ -2823,16 +2898,48 @@ void editTranspose(char keyPress, byte forceRefresh)
   // DDDOXXXXXXXXXXXX        
   if(keyPress >= 0 && keyPress <= 15)
   {
-    arpTranspose = keyPress - 3;
-    arpFlags |= ARP_FLAG_REBUILD;
+    if(editFlags & EDIT_FLAG_IS_HELD)
+    {
+      if(editFlags & EDIT_FLAG_IS_NEW) 
+      {
+        arpTransposeSequencePos = 0;
+        arpTransposeSequenceLen = 0;
+        arpTransposeSequenceMask = 0;
+        editFlags &= ~EDIT_FLAG_IS_NEW;
+      }
+      
+      if(arpTransposeSequenceLen < ARP_MAX_TRAN_SEQ - 1)      
+      {
+        arpTransposeSequenceMask |= (1<<keyPress);
+        arpTransposeSequence[arpTransposeSequenceLen++] = keyPress - 3;
+      }
+    }
+    else     
+    {
+      // pressing a note button while the transpose menu
+      // button is not held will clear transpose sequence
+      arpTransposeSequencePos = 0;
+      arpTransposeSequenceLen = 0;      
+      arpTransposeSequenceMask = 0;
+      arpTranspose = keyPress - 3;
+      arpFlags |= ARP_FLAG_REBUILD;
+    }   
     forceRefresh = 1;
   }
 
   if(forceRefresh)
   {
-    uiClearLeds();
     uiSetLeds(0, 16, uiLedDim);
-    uiLeds[3] = uiLedMedium;
+
+    arpTransposeSequenceMask |= (1<<3);
+    unsigned int m=1;
+    for(byte i=0; i<16; ++i) {
+      if(arpTransposeSequenceMask & m) {
+        uiLeds[i] = uiLedMedium;
+      }
+      m<<=1;
+    }
+    
     if(arpTranspose >= -3 && arpTranspose < 13)
       uiLeds[arpTranspose + 3] = uiLedBright;
   }
@@ -2924,8 +3031,8 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
 // EDIT RUN
 void editRun(unsigned long milliseconds)
 {
-  byte forceRefresh = editForceRefresh;
-  editForceRefresh = 0;
+  byte forceRefresh = (editFlags & EDIT_FLAG_FORCE_REFRESH);
+  editFlags &= ~ EDIT_FLAG_FORCE_REFRESH;
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
@@ -2964,6 +3071,8 @@ void editRun(unsigned long milliseconds)
   // is any menu key currently held?
   if(uiLastMenuKey != NO_VALUE)
   {
+    editFlags |= EDIT_FLAG_IS_HELD;      
+    
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
     {
@@ -2986,6 +3095,8 @@ void editRun(unsigned long milliseconds)
   }
   else
   {
+    editFlags &= ~EDIT_FLAG_IS_HELD;      
+    editFlags |= EDIT_FLAG_IS_NEW;      
     editLongHoldTime = 0;
   }
 
@@ -3037,7 +3148,13 @@ void editRun(unsigned long milliseconds)
       editOctaveSpan(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_RATE:
-    editRate(dataKeyPress, forceRefresh);
+    if(editPressType == EDIT_LONG_PRESS)
+    {
+      arpClear();
+      midiPanic();
+    }
+    else
+      editRate(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_VELOCITY:
     editVelocity(dataKeyPress, forceRefresh);
@@ -3046,11 +3163,8 @@ void editRun(unsigned long milliseconds)
     editGateLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_INSERT:
-    if(editPressType == EDIT_LONG_PRESS)
-    {
-      arpClear();
-      midiPanic();
-    }
+    if(editPressType >= EDIT_LONG_HOLD)
+      editManualChord(dataKeyPress, forceRefresh);
     else
       editInsertMode(dataKeyPress, forceRefresh);
     break;    
@@ -3147,19 +3261,19 @@ public:
         case TRANSPOSE:          
           arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
           arpFlags |= ARP_FLAG_REBUILD;
-          editForceRefresh = 1;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case TEMPO:
           v = endStops(value);
           v = 30 + 250.0 * (v/1023.0);
           synchSetTempo(v);
-          editForceRefresh = 1;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case VELOCITY:
           v = endStops(value);
           arpVelocity = v/8;
           arpVelocityMode = 1;
-          editForceRefresh = 1;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case GATELEN:
           v = endStops(value);
@@ -3169,7 +3283,7 @@ public:
             arpGateLength = 1;
           else
             arpGateLength = 10 + (v*150.0)/1023.0;
-          editForceRefresh = 1;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case PITCHBEND:
           v = 16 * centreDetent(value);
@@ -3368,7 +3482,7 @@ void setup() {
     
     uiSetLeds(0, 16, uiLedBright);
     delay(1000);
-    editForceRefresh = 1;
+    editFlags |= EDIT_FLAG_FORCE_REFRESH;
   }  
 }
 
