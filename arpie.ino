@@ -174,10 +174,11 @@ byte uiLedDim;
 #define UI_HOLD_CHORD    0x04
 #define UI_HOLD_LOCKED   0x08
 
+#define SYNCH_SOURCE_NONE      0
 #define SYNCH_SOURCE_INTERNAL  1
 #define SYNCH_SOURCE_INPUT     2
 #define SYNCH_SOURCE_AUX       3
-
+#define SYNCH_SOURCE_MANUAL    4
 
 volatile byte uiLeds[16];
 volatile char uiDataKey;
@@ -739,7 +740,7 @@ byte midiRead(unsigned long milliseconds, byte passThru)
           {
           case 0x80: // note off
           case 0x90: // note on
-            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_NOTES))
+            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_NOTES) || !!(uiHoldType & UI_HOLD_LOCKED))
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                
             return midiInRunningStatus; // return to the arp engine
           case 0xB0: // CC
@@ -751,7 +752,7 @@ byte midiRead(unsigned long milliseconds, byte passThru)
             }
             // otherwise fall through
           default:
-            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_CHMSG))
+            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_CHMSG) || !!(uiHoldType & UI_HOLD_LOCKED))
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
             // send to the new channel
             if(!!(midiOptions & MIDI_OPTS_SEND_CHMSG))
@@ -832,6 +833,8 @@ volatile char synchPulseClockTickCount;        // number of pending clock out pu
 byte synchClockSendState;                      // ms counter for pulse width
 byte synchClockSendStateTimer;                 // used to detect change in ms
 
+byte synchStartSource;                         // In ext sync mode, remembers how clock was started
+
 #define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
 
 // Define pins used for the hack header
@@ -865,11 +868,12 @@ byte synchClockSendStateTimer;                 // used to detect change in ms
 #define SYNCH_SEND_STOP                0x0002    // This flag indicates that a STOP message needs to be sent to slaves
 #define SYNCH_SEND_CONTINUE            0x0004    // This flag indicates that a CONTINUE message needs to be sent to slaves
 #define SYNCH_RESET_NEXT_STEP_TIME     0x0008    // This flag indicates that the next step will be timed from now
-#define SYNCH_INPUT_RUNNING            0x0010    // This flag indicates that the MIDI INPUT synch is in a running state
+//#define SYNCH_INPUT_RUNNING            0x0010    // This flag indicates that the MIDI INPUT synch is in a running state
 #define SYNCH_RESTART_ON_BEAT          0x0020    // This flag indicates that the sequence will restart at the next beat
 #define SYNCH_AUX_RUNNING              0x0040    // This flag indicates that the AUX SYNCH input in a running state 
 #define SYNCH_ZERO_TICK_COUNT          0x0080    // This flag indicates cause the tick count to restart (and get beat LED in synch)
 #define SYNCH_HOLD_AT_ZERO             0x0100    // This flag resets and suspends arpeggiator while still passing MIDI clock
+//#define SYNCH_MANUAL_RUNNING           0x0200    // The user manually started the arp when in ext sync mode
 
 
 // Values for synchRate
@@ -917,14 +921,10 @@ void synchTick(byte source)
       if(synchLastStepTime > 0)
         synchStepPeriod = ms - synchLastStepTime;
       synchLastStepTime = ms;
-  
-      if((SYNCH_SOURCE_INPUT == source) && !(synchFlags&SYNCH_INPUT_RUNNING))
+
+      if(synchToMIDI && synchStartSource != source && synchStartSource != SYNCH_SOURCE_MANUAL)
       {
-        // do not advance playback - midi in synch is stopped
-      }
-      else if((SYNCH_SOURCE_AUX == source) && !(synchFlags&SYNCH_AUX_RUNNING))
-      {
-        // do not advance playback - aux synch is stopped
+        // do not advance playback - ext synch is stopped
       }
       else 
       {
@@ -968,8 +968,7 @@ void synchRestartSequence()
 // START PLAYING
 void synchStart(byte source)
 {
-  if(SYNCH_SOURCE_INPUT == source) synchFlags|=SYNCH_INPUT_RUNNING;
-  if(SYNCH_SOURCE_AUX == source) synchFlags|=SYNCH_AUX_RUNNING;
+  synchStartSource = source;  
   synchFlags |= SYNCH_SEND_START;  
   synchRestartSequence();
 }
@@ -978,16 +977,15 @@ void synchStart(byte source)
 // STOP PLAYING
 void synchStop(byte source)
 {
-  if(SYNCH_SOURCE_INPUT == source) synchFlags&=~SYNCH_INPUT_RUNNING;
-  if(SYNCH_SOURCE_AUX == source) synchFlags&=~SYNCH_AUX_RUNNING;
+  synchStartSource = SYNCH_SOURCE_NONE;  
   synchFlags |= SYNCH_SEND_STOP;
 }
+
 //////////////////////////////////////////////////////////////////////////
 // CONTINUE PLAYING FROM CURRENT POSITION
 void synchContinue(byte source)
 {
-  if(SYNCH_SOURCE_INPUT == source) synchFlags|=SYNCH_INPUT_RUNNING;
-  if(SYNCH_SOURCE_AUX == source) synchFlags|=SYNCH_AUX_RUNNING;
+  synchStartSource = source;  
   synchFlags |= SYNCH_SEND_CONTINUE;
 }
 
@@ -1067,9 +1065,11 @@ void synchInit()
 
   // by default do not send synch
   synchSendMIDI = eepromGet(EEPROM_SYNCH_SEND,0,1,0);
+  
   synchTicksToSend = 0;
   synchFlags = 0;
-
+  synchStartSource = SYNCH_SOURCE_NONE;  
+  
   // set default play rate
   synchPlayRate = SYNCH_RATE_16;
 
@@ -1120,15 +1120,21 @@ void synchInit()
 // SYNCH RUN
 void synchRun(unsigned long milliseconds)
 {
-  byte auxRunning = !!(PIND & DBIT_SYNCH_RUN); // see if aux port is running
   if(synchToMIDI && !!(midiOptions & MIDI_OPTS_SYNCH_AUX)) // Check if we are interested
   {
+    byte auxRunning = !!(PIND & DBIT_SYNCH_RUN); // see if aux port is running
     if(auxRunning && !(synchFlags & SYNCH_AUX_RUNNING)) // transition STOP->RUN
+    {
+      synchFlags |= SYNCH_AUX_RUNNING;
       synchContinue(SYNCH_SOURCE_AUX);
+    }
     else if(!auxRunning && !!(synchFlags & SYNCH_AUX_RUNNING)) // transition RUN->STOP
+    {
+      synchFlags &= ~SYNCH_AUX_RUNNING;
       synchStop(SYNCH_SOURCE_AUX);
+    }
   }  
-  synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
+//  synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
 
   // else check if we are using internal clock
   if(!synchToMIDI)
@@ -2824,7 +2830,11 @@ void editTempoSynch(char keyPress, byte forceRefresh)
     forceRefresh = 1;
     break;
 
-  case 13: // Tap tempo
+  case 13: 
+    if(synchToMIDI) { // Force stop in ext sync
+        synchStop(SYNCH_SOURCE_MANUAL);
+    }
+    else// Tap tempo
     {
       unsigned long ms = millis();
       if(ms > editTapTempoTime && ms - editTapTempoTime < 1000)
@@ -2835,15 +2845,21 @@ void editTempoSynch(char keyPress, byte forceRefresh)
       editTapTempoTime = ms;
     }
     break;
-  case 14: // Manual tempo increment
-    if(!synchToMIDI && synchBPM > 20)
+  case 14: 
+    if(synchToMIDI) { // Force start in ext sync
+        synchStart(SYNCH_SOURCE_MANUAL);
+    }
+    else if(synchBPM > 20)// Manual tempo dec
     {
       synchSetTempo(synchBPM-1);
       forceRefresh = 1;
     }
     break;
-  case 15: // Manual tempo decrement
-    if(!synchToMIDI && synchBPM < 300)
+  case 15: 
+    if(synchToMIDI) { // Force continue in ext sync
+        synchContinue(SYNCH_SOURCE_MANUAL);
+    }
+    else if(synchBPM < 300)// Manual tempo inc
     {
       synchSetTempo(synchBPM+1);
       forceRefresh = 1;
@@ -2858,6 +2874,11 @@ void editTempoSynch(char keyPress, byte forceRefresh)
     {
       uiLeds[0] = uiLedBright;
       uiLeds[1] = synchSendMIDI ? uiLedBright : uiLedMedium;                                                                                                                                                                                                                                                            
+      
+      uiLeds[13] = uiLedMedium;                                                                                                                                                                                                                                                            
+      uiLeds[14] = uiLedMedium;                                                                                                                                                                                                                                                            
+      uiLeds[15] = uiLedMedium;                                                                                                                                                                                                                                                            
+      
     }
     else
     {    
@@ -3481,10 +3502,7 @@ void heartbeatRun(unsigned long milliseconds)
 //
 ////////////////////////////////////////////////////////////////////////////////
 void setup() {                
-
-  // Load user preferences  
-  prefsInit();
-  
+ 
   midiInit();
   arpInit();
   heartbeatInit();
@@ -3499,6 +3517,9 @@ void setup() {
   
   // init hack header
   hhInit();
+
+  // Load user preferences  
+  prefsInit();
   
   // pressing hold switch at startup shows UI version
   uiShowVersion();
