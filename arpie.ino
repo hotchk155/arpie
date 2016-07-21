@@ -1264,10 +1264,12 @@ void synchRun(unsigned long milliseconds)
 #define ARP_PLAY_THRU 0x8000
 #define ARP_PATN_PLAY     0x01
 #define ARP_PATN_GLIDE    0x02
-#define ARP_PATN_ACCENT   0x04
-#define ARP_PATN_OCTAVE   0x08
-#define ARP_PATN_4TH      0x10
-#define ARP_PATN_PLAYTHRU 0x20
+#define ARP_PATN_TIE      0x04
+#define ARP_PATN_ACCENT   0x08
+#define ARP_PATN_OCTAVE   0x10
+#define ARP_PATN_OCTDN    0x20
+#define ARP_PATN_4TH      0x40
+#define ARP_PATN_PLAYTHRU 0x80
 
 // Values for arpType
 enum 
@@ -1377,15 +1379,16 @@ enum {
                                       //012345678901234567
   ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
   ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
-  ARP_OPT_GLIDEMODE       = (unsigned)0b0001000000000000, // GLIDE mode (0=one step 1=till next note)
-  ARP_OPTS_MASK           = (unsigned)0b1011000000000000,
+  ARP_OPTS_MASK           = (unsigned)0b1010000000000000,
 
   ARP_LAYER_ACCENT        = (unsigned)0b0000000000000001,
   ARP_LAYER_GLIDE         = (unsigned)0b0000000000000010,
-  ARP_LAYER_OCTUP         = (unsigned)0b0000000000000100,
-  ARP_LAYER_4THDN         = (unsigned)0b0000000000001000,
-  ARP_LAYER_PLAYTHRU      = (unsigned)0b0000000000010000,
-  ARP_LAYER_MASK          = (unsigned)0b0000000000011111
+  ARP_LAYER_TIE           = (unsigned)0b0000000000000100,
+  ARP_LAYER_OCTUP         = (unsigned)0b0000000000001000,
+  ARP_LAYER_OCTDN         = (unsigned)0b0000000000010000,
+  ARP_LAYER_4THDN         = (unsigned)0b0000000000100000,
+  ARP_LAYER_PLAYTHRU      = (unsigned)0b0000000001000000,
+  ARP_LAYER_MASK          = (unsigned)0b0000000001111111
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2031,7 +2034,9 @@ void arpRun(unsigned long milliseconds)
     {
       byte glide = 0;
       byte newNote = 0;
-      if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
+      if(arpPattern[arpPatternIndex] & ARP_PATN_TIE)
+        glide = 2;
+      else if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
         glide = 1;
         
       // Keep the sequence index within range      
@@ -2054,7 +2059,9 @@ void arpRun(unsigned long milliseconds)
         if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
         {
           byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
-          if((arpPattern[arpPatternIndex] & ARP_PATN_OCTAVE) && (note <= 115))
+          if((arpPattern[arpPatternIndex] & ARP_PATN_OCTDN) && (note > 12))
+            note-=12;
+          else if((arpPattern[arpPatternIndex] & ARP_PATN_OCTAVE) && (note <= 115))
             note+=12;
           else if((arpPattern[arpPatternIndex] & ARP_PATN_4TH) && (note >= 5))
             note-=5;
@@ -2087,18 +2094,15 @@ void arpRun(unsigned long milliseconds)
       }
 
       // check if we need to "glide"
-      if(glide)
+      if(glide == 2) 
       {
-        if(arpOptions & ARP_OPT_GLIDEMODE) 
-        {
           // tie          
           arpStopNoteTime = 0;
-        }
-        else
-        {
-          // full step
-          arpStopNoteTime = milliseconds + synchStepPeriod;
-        }
+      }
+      else if(glide == 1) 
+      {
+         // full step
+         arpStopNoteTime = milliseconds + synchStepPeriod;
       }
       else if(arpGateLength)
       {              
@@ -2296,8 +2300,9 @@ void editPattern(char keyPress, byte forceRefresh)
       uiLeds[i] = (arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
 
     // only display the play position if we have a sequence
-    if(arpSequenceLength)    
-      uiLeds[arpPatternIndex] = uiLedBright;
+    if(arpSequenceLength) {
+        uiLeds[arpPatternIndex] = uiLedBright;
+    }
 
     // reset the flag
     arpRefresh = 0;
@@ -2315,8 +2320,14 @@ void editPatternExt(char keyPress, byte forceRefresh)
   else if(arpOptions & ARP_LAYER_GLIDE) {
     extBit = ARP_PATN_GLIDE;
   }
+  else if(arpOptions & ARP_LAYER_TIE) {
+    extBit = ARP_PATN_TIE;
+  }
   else if(arpOptions & ARP_LAYER_OCTUP) {
     extBit = ARP_PATN_OCTAVE;
+  }
+  else if(arpOptions & ARP_LAYER_OCTDN) {
+    extBit = ARP_PATN_OCTDN;
   }
   else if(arpOptions & ARP_LAYER_4THDN) {
     extBit = ARP_PATN_4TH;
@@ -3537,7 +3548,7 @@ void setup() {
       PREF_LONGPRESS2 | 
       PREF_LEDPROFILE2;
     arpOptions = 
-      ARP_OPT_SKIPONREST|ARP_OPT_GLIDEMODE;
+      ARP_OPT_SKIPONREST;
   
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
