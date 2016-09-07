@@ -1327,6 +1327,7 @@ byte arpOctaveSpan;        // number of octaves to span with the arpeggio
 byte arpInsertMode;        // additional note insertion mode
 byte arpVelocityMode;      // (0 = original, 1 = override)
 byte arpVelocity;          // velocity 
+byte arpAccentVelocity;    // accent velocity
 byte arpGateLength;        // gate length (0 = tie notes, 1-127 = fraction of beat)
 char arpTranspose;         // up/down transpose
 char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
@@ -1432,7 +1433,8 @@ void arpInit()
   arpOctaveShift = 0;
   arpOctaveSpan = 1;
   arpInsertMode = ARP_INSERT_OFF;
-  arpVelocity = 127;
+  arpVelocity = 100;
+  arpAccentVelocity = 127;
   arpVelocityMode = 1;
   arpChordLength = 0;
   arpNotesHeld = 0;
@@ -2081,7 +2083,7 @@ void arpRun(unsigned long milliseconds)
           if(arpFlags & ARP_FLAG_MUTE)
             velocity = 0;
           else if(arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
-            velocity = 127;
+            velocity = arpAccentVelocity;
           else
             velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
     
@@ -2606,6 +2608,28 @@ void editVelocity(char keyPress, byte forceRefresh)
         }
         uiLeds[i] = uiLedMedium;
       }
+    }
+  }
+}
+void editAccentVelocity(char keyPress, byte forceRefresh)
+{
+  byte vel[16] = {0,9,17,26,34,43,51,60,68,77,85,94,102,111,119,127};    
+  if(keyPress >= 0 && keyPress <= 15)
+  {    
+    arpAccentVelocity = vel[keyPress];
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    for(int i=15; i>=0; --i)
+    {
+      if(arpAccentVelocity >= vel[i]) {
+        uiLeds[i] = uiLedBright;
+        break;
+      }
+      uiLeds[i] = uiLedMedium;
     }
   }
 }
@@ -3260,7 +3284,10 @@ void editRun(unsigned long milliseconds)
       editRate(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_VELOCITY:
-    editVelocity(dataKeyPress, forceRefresh);
+    if(editPressType >= EDIT_LONG_HOLD)
+      editAccentVelocity(dataKeyPress, forceRefresh);
+    else
+      editVelocity(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_GATE_LENGTH:
     editGateLength(dataKeyPress, forceRefresh);
