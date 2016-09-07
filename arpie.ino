@@ -37,6 +37,10 @@
 #define HH_CC_PC4             17
 #define HH_CC_PC5             18
 
+// The controller number used for Velocity CC mode
+#define VELOCITY_CC           41 // Korg Volca FM
+
+
 // Hack header pulse clock config
 #define SYNCH_TICK_TO_PULSE_RATIO  12
 #define SYNCH_CLOCK_PULSE_WIDTH    10
@@ -601,6 +605,7 @@ byte midiOptions;
 #define MIDI_OPTS_SYNCH_INPUT      0x08
 #define MIDI_OPTS_SYNCH_AUX        0x10
 #define MIDI_OPTS_FILTER_CHMODE    0x20
+#define MIDI_OPTS_VOLCAFM_VEL      0x40
 
 #define MIDI_OPTS_MAX_VALUE        0x3F
 #define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
@@ -792,6 +797,7 @@ void midiClearRunningStatus()
 {
   midiOutRunningStatus = 0;
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -1366,6 +1372,8 @@ byte arpTransposeSequenceLen;
 byte arpTransposeSequencePos;
 unsigned int arpTransposeSequenceMask;
 
+byte arpLastVelocityCC;
+
 enum {
   ARP_FLAG_REBUILD = 0x01,
   ARP_FLAG_MUTE    = 0x02
@@ -1451,6 +1459,7 @@ void arpInit()
   arpOptionsLoad();
   arpOptions &= ~ARP_LAYER_MASK;
   arpOptions |= ARP_LAYER_ACCENT;
+  arpLastVelocityCC = 0xFF;
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
@@ -1469,6 +1478,10 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
 {  
   if(note<128)
   {
+    if((midiOptions & MIDI_OPTS_VOLCAFM_VEL) && (arpLastVelocityCC != velocity)) {
+      midiWrite(MIDI_MK_CTRL_CHANGE, VELOCITY_CC, velocity, 2, millis());    
+      arpLastVelocityCC = velocity;
+    }  
     midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);          
     byte n = (1<<(note&0x07));
     arpPlayingNotes[note>>3] |= n;
@@ -1589,6 +1602,9 @@ void arpRandomizeChord(int *dest)
 // BUILD A NEW SEQUENCE
 void arpBuildSequence()
 {  
+  // make sure the velocity CC is refreshed
+  arpLastVelocityCC = 0xFF;
+  
   // sequence is empty if no chord notes present
   arpChordRootNote=-1;
   arpSequenceLength=0;
@@ -2028,7 +2044,7 @@ void arpRun(unsigned long milliseconds)
       }      
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
-    
+ 
     // check there is a note (not a rest at this) point in the pattern
     if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
@@ -2345,8 +2361,9 @@ void editPatternExt(char keyPress, byte forceRefresh)
   if(forceRefresh || arpRefresh)
   {    
     // copy the leds
-    for(int i=0; i<16; ++i)
-      uiLeds[i] = (arpPattern[i] & extBit) ? uiLedMedium : 0;
+    for(int i=0; i<16; ++i) {
+      uiLeds[i] = (arpPattern[i] & extBit) ? uiLedMedium : (arpPattern[i] & ARP_PATN_PLAY) ? uiLedDim : 0;
+    }
 
     // only display the play position if we have a sequence
     if(arpSequenceLength)    
@@ -2668,6 +2685,12 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
+  else if(6 == keyPress)
+  {    
+    midiOptions ^= MIDI_OPTS_VOLCAFM_VEL;
+    eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
+    forceRefresh = 1;
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2677,6 +2700,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? uiLedBright : uiLedDim;
     uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? uiLedBright : uiLedDim;
     uiLeds[5] = !!(midiOptions&MIDI_OPTS_FILTER_CHMODE)? uiLedBright : uiLedDim;    
+    uiLeds[6] = !!(midiOptions&MIDI_OPTS_VOLCAFM_VEL)? uiLedBright : uiLedDim;    
   }    
 }
 
@@ -3010,17 +3034,20 @@ void editTranspose(char keyPress, byte forceRefresh)
 
   if(forceRefresh)
   {
+    
     uiSetLeds(0, 16, uiLedDim);
 
     arpTransposeSequenceMask |= (1<<3);
     unsigned int m=1;
-    for(byte i=0; i<16; ++i) {
-      if(arpTransposeSequenceMask & m) {
+    for(byte i=0; i<16; ++i) 
+    {
+      if(arpTransposeSequenceMask & m) 
+      {
         uiLeds[i] = uiLedMedium;
       }
       m<<=1;
     }
-    
+
     if(arpTranspose >= -3 && arpTranspose < 13)
       uiLeds[arpTranspose + 3] = uiLedBright;
   }
@@ -3113,7 +3140,7 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
 void editRun(unsigned long milliseconds)
 {
   byte forceRefresh = (editFlags & EDIT_FLAG_FORCE_REFRESH);
-  editFlags &= ~ EDIT_FLAG_FORCE_REFRESH;
+  editFlags &= ~EDIT_FLAG_FORCE_REFRESH;
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
