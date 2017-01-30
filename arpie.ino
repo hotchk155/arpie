@@ -39,6 +39,7 @@
 
 // The controller number used for Velocity CC mode
 #define VELOCITY_CC           41 // Korg Volca FM
+#define LOCAL_ON_CC          122 
 
 
 // Hack header pulse clock config
@@ -620,8 +621,9 @@ byte midiOptions;
 #define MIDI_OPTS_SYNCH_AUX        0x10
 #define MIDI_OPTS_FILTER_CHMODE    0x20
 #define MIDI_OPTS_VOLCAFM_VEL      0x40
+#define MIDI_OPTS_LOCAL_OFF        0x80
 
-#define MIDI_OPTS_MAX_VALUE        0x3F
+#define MIDI_OPTS_MAX_VALUE        0xFF
 #define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
 
 // macros
@@ -639,6 +641,8 @@ byte midiOptions;
 
 #define MIDI_OMNI           0xff
 
+extern void midiLocalOff(byte local_off);
+
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI INIT
 void midiInit()
@@ -654,7 +658,6 @@ void midiInit()
   midiSendChannel = eepromGet(EEPROM_OUTPUT_CHAN, 0, 15, 0);
   midiReceiveChannel = eepromGet(EEPROM_INPUT_CHAN, 0, 15, MIDI_OMNI);
   midiOptions = eepromGet(EEPROM_MIDI_OPTS, 0, MIDI_OPTS_MAX_VALUE, MIDI_OPTS_DEFAULT_VALUE);
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -683,6 +686,8 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
   // indicate activity
   uiFlashOutLED(milliseconds);
 }
+
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI READ
@@ -806,12 +811,21 @@ void midiPanic()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// CLEAR RUUNNING STATUS
+// CLEAR RUNNING STATUS
 void midiClearRunningStatus()
 {
   midiOutRunningStatus = 0;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// SET LOCAL OFF
+void midiLocalOff(byte local_off)
+{
+  midiOutRunningStatus = 0;
+  for(int i=0;i<16;++i) {
+    midiWrite(0xB0 | i, LOCAL_ON_CC, local_off? 0: 127, 2, millis());    
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -2710,6 +2724,13 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
+  else if(7 == keyPress)
+  {    
+    midiOptions ^= MIDI_OPTS_LOCAL_OFF;
+    eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
+    midiLocalOff(midiOptions & MIDI_OPTS_LOCAL_OFF);    
+    forceRefresh = 1;
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2720,6 +2741,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? uiLedBright : uiLedDim;
     uiLeds[5] = !!(midiOptions&MIDI_OPTS_FILTER_CHMODE)? uiLedBright : uiLedDim;    
     uiLeds[6] = !!(midiOptions&MIDI_OPTS_VOLCAFM_VEL)? uiLedBright : uiLedDim;    
+    uiLeds[7] = !!(midiOptions&MIDI_OPTS_LOCAL_OFF)? uiLedBright : uiLedDim;    
   }    
 }
 
@@ -3613,6 +3635,11 @@ void setup() {
     delay(1000);
     editFlags |= EDIT_FLAG_FORCE_REFRESH;
   }  
+  
+  if(midiOptions & MIDI_OPTS_LOCAL_OFF) {
+    midiLocalOff(true);
+  }
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
