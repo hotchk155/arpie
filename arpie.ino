@@ -22,8 +22,8 @@
 //    A4    Feb2015  New release version
 //    XXXX  Working on changes
 //
-#define VERSION_HI  7
-#define VERSION_LO  7
+#define VERSION_HI  70
+#define VERSION_LO  5
 
 //
 // INCLUDE FILES
@@ -3166,12 +3166,12 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 12, uiLedDim);
-    uiLeds[1] = uiLedMedium;
-    uiLeds[3] = uiLedMedium;
-    uiLeds[6] = uiLedMedium;
-    uiLeds[8] = uiLedMedium;
-    uiLeds[10] = uiLedMedium;
+    uiSetLeds(0, 12, uiLedMedium);
+    uiLeds[1] = uiLedDim;
+    uiLeds[3] = uiLedDim;
+    uiLeds[6] = uiLedDim;
+    uiLeds[8] = uiLedDim;
+    uiLeds[10] = uiLedDim;
     uiLeds[arpForceToScaleRoot] = uiLedBright;
   }
 }
