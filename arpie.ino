@@ -20,10 +20,10 @@
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
 //    1.07  16Nov14  Revert to primary menu function, glide mode
 //    A4    Feb2015  New release version
-//    XXXX  Working on changes
+//    A5    Jun2017  Working on changes
 //
-#define VERSION_HI  70
-#define VERSION_LO  5
+#define VERSION_HI  5
+#define VERSION_LO  0
 
 //
 // INCLUDE FILES
@@ -2422,12 +2422,27 @@ void editArpType(char keyPress, byte forceRefresh)
     forceRefresh = 1;
     break;
   case 12: 
-    arpPatternLength = 8+random(8);
-    for(i = 0;i<16;++i) arpPattern[i] = random(256);
+    for(i = 0;i<16;++i) {
+      arpPattern[i] &= ARP_PATN_PLAY;
+      if(arpPattern[i] & ARP_PATN_PLAY) {
+        switch(random(8)) {
+          case 3: arpPattern[i] |= ARP_PATN_ACCENT; break;
+          case 4: arpPattern[i] |= ARP_PATN_TIE; break;
+          case 5: arpPattern[i] |= ARP_PATN_GLIDE; break;
+          case 6: arpPattern[i] |= ARP_PATN_OCTAVE; break;
+          case 7: arpPattern[i] |= ARP_PATN_GLIDE|ARP_PATN_OCTAVE; break;
+        }
+      }
+    }
     break;
   case 13: 
-    arpPatternLength = 8+random(8);
-    for(i = 0;i<16;++i) arpPattern[i] = random(2)? ARP_PATN_PLAY:0;
+    for(i = 0;i<16;++i) {
+      switch(random(5)) {
+        case 0: case 1: arpPattern[i] = 0; break;
+        case 4: arpPattern[i] = ARP_PATN_PLAY|ARP_PATN_ACCENT; break;
+        default: arpPattern[i] = ARP_PATN_PLAY; break;
+      }
+    }
     break;
   case 14:
     for(i = 0;i<16;++i) arpPattern[i] = 0;
