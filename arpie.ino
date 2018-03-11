@@ -8,7 +8,7 @@
 //    //      // //       //    //  //  //
 //      //////   //       //////    //    ////
 //      MIDI ARPEGGIATOR  //
-//      hotchk155/2013-15 //
+//      hotchk155/2013-18 //
 //
 //    Revision History   
 //    1.00  16Apr13  Baseline 
@@ -22,9 +22,10 @@
 //    4.0   Feb2015  Release A4
 //    5.0   Jun2017  Release A5
 //    5.1   18Jul17  Hack header fix
+//    5.2   11Mar18  Fix timing glitch on aux sync
 //
 #define VERSION_HI  5
-#define VERSION_LO  1
+#define VERSION_LO  2
 
 //
 // INCLUDE FILES
@@ -688,13 +689,10 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
   uiFlashOutLED(milliseconds);
 }
 
-
-
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI READ
 byte midiRead(unsigned long milliseconds, byte passThru)
 {
-
 
   // loop while we have incoming MIDI serial data
   while(Serial.available())
@@ -860,7 +858,12 @@ byte synchClockSendState;                      // ms counter for pulse width
 byte synchClockSendStateTimer;                 // used to detect change in ms
 byte synchStartSource;                         // In ext sync mode, remembers how clock was started
 
+volatile byte synchAuxEvents[8];               // buffer to store incoming sync events from the aux port
+volatile byte synchAuxEventsHead;
+volatile byte synchAuxEventsTail;
+
 #define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
+
 
 // Define pins used for the hack header
 #define P_SYNCH_HH_DETECT                19
@@ -907,6 +910,8 @@ enum
   SYNCH_RATE_16T  = 4,
   SYNCH_RATE_32   = 3
 };
+
+
 
 //////////////////////////////////////////////////////////////////////////
 // HANDLER FOR A MIDI CLOCK TICK
@@ -1003,15 +1008,26 @@ void synchContinue(byte source)
 }
 
 //////////////////////////////////////////////////////////////////////////
+// PLACE A SYNC EVENT INTO AUX EVENTS QUEUE 
+// Events from the aux port are converted into MIDI equivalent message
+// and queued up in a circular buffer
+void synchAuxEvent(byte event) {
+  byte n = (synchAuxEventsHead + 1)&7;
+  if(n != synchAuxEventsTail) {
+    synchAuxEvents[synchAuxEventsHead] = event;
+    synchAuxEventsHead = n;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////
 //
 // synchReset_ISR
 // Called at start of bar
 // 
 //////////////////////////////////////////////////////////////////////////
-ISR(synchReset_ISR)
+void synchReset_ISR()
 {
-  if(!!(synchFlags & SYNCH_TO_MIDI) && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))     
-    synchStart(SYNCH_SOURCE_AUX);
+  synchAuxEvent(MIDI_SYNCH_START);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1020,11 +1036,9 @@ ISR(synchReset_ISR)
 // Called on midi synch
 // 
 //////////////////////////////////////////////////////////////////////////
-ISR(synchTick_ISR)
+void synchTick_ISR()
 {
-  // For AUX midi tick to be actioned we need to synch to AUX MIDI and we need a RUNNING status
-  if(!!(synchFlags & SYNCH_TO_MIDI) && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))
-    synchTick(SYNCH_SOURCE_AUX);
+  synchAuxEvent(MIDI_SYNCH_TICK);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1074,6 +1088,8 @@ void synchResynch()
 void synchInit()
 {
   synchFlags = 0;
+  synchAuxEventsHead = 0;
+  synchAuxEventsTail = 0;
   
   // by default don't synch
   if(eepromGet(EEPROM_SYNCH_SOURCE,0,1,0)) 
@@ -1136,21 +1152,15 @@ void synchInit()
 // SYNCH RUN
 void synchRun(unsigned long milliseconds)
 {
-  if(!!(synchFlags & SYNCH_TO_MIDI) && !!(midiOptions & MIDI_OPTS_SYNCH_AUX)) // Check if we are interested
-  {
-    byte auxRunning = !!(PIND & DBIT_SYNCH_RUN); // see if aux port is running
-    if(auxRunning && !(synchFlags & SYNCH_AUX_RUNNING)) // transition STOP->RUN
-    {
-      synchFlags |= SYNCH_AUX_RUNNING;
-      synchContinue(SYNCH_SOURCE_AUX);
-    }
-    else if(!auxRunning && !!(synchFlags & SYNCH_AUX_RUNNING)) // transition RUN->STOP
-    {
-      synchFlags &= ~SYNCH_AUX_RUNNING;
-      synchStop(SYNCH_SOURCE_AUX);
-    }
-  }  
-//  synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
+  byte auxRunning = !!(PIND & DBIT_SYNCH_RUN); // see if aux port is running
+  if(auxRunning && !(synchFlags & SYNCH_AUX_RUNNING)) { // transition STOP->RUN
+    synchFlags |= SYNCH_AUX_RUNNING;
+    synchAuxEvent(MIDI_SYNCH_CONTINUE); // stick continue event in queue
+  }
+  else if(!auxRunning && !!(synchFlags & SYNCH_AUX_RUNNING)) {// transition RUN->STOP
+    synchFlags &= ~SYNCH_AUX_RUNNING;
+    synchAuxEvent(MIDI_SYNCH_STOP); // stick stop event in queue
+  }
 
   // else check if we are using internal clock
   if(!(synchFlags & SYNCH_TO_MIDI))
@@ -1253,6 +1263,33 @@ void synchRun(unsigned long milliseconds)
     uiFlashSynchLED(milliseconds);
     synchFlags&=~SYNCH_BEAT;
   } 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// PROCESS ALL THE PENDING EVENTS IN THE AUX EVENT QUEUE
+void synchAuxRead()
+{                 
+  while(synchAuxEventsTail != synchAuxEventsHead) {
+    if(!!(synchFlags & SYNCH_TO_MIDI) && !!(midiOptions & MIDI_OPTS_SYNCH_AUX))
+    {
+      switch(synchAuxEvents[synchAuxEventsTail])
+      {
+      case MIDI_SYNCH_TICK:
+        synchTick(SYNCH_SOURCE_AUX);
+        break;            
+      case MIDI_SYNCH_START:
+        synchStart(SYNCH_SOURCE_AUX);
+        break;
+      case MIDI_SYNCH_CONTINUE:
+        synchContinue(SYNCH_SOURCE_AUX);
+        break;
+      case MIDI_SYNCH_STOP:
+        synchStop(SYNCH_SOURCE_AUX);
+        break;
+      }
+    }
+    synchAuxEventsTail = (synchAuxEventsTail + 1)&7;
+  }
 }
 
 
@@ -1875,7 +1912,7 @@ void arpReadInput(unsigned long milliseconds)
 {
   int i;
   char noteIndexInChord; 
-
+  
   // we may have multiple notes to read
   for(;;)
   {
@@ -2024,6 +2061,9 @@ void arpRun(unsigned long milliseconds)
 {  
   byte noteSet[16] = {0};
   
+  // read events from aux port
+  synchAuxRead();
+
   // update the chord based on user input
   arpReadInput(milliseconds);
 
