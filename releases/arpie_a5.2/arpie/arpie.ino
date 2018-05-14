@@ -23,9 +23,9 @@
 //    5.0   Jun2017  Release A5
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
-//    5.3   14May18  Added preference to disable MIDI Running Mode
+//
 #define VERSION_HI  5
-#define VERSION_LO  3
+#define VERSION_LO  2
 
 //
 // INCLUDE FILES
@@ -77,7 +77,6 @@ enum {
   PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0000001000000000,
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
  
-  PREF_DISABLERMODE= (unsigned int)0b0000000000100000,
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
 
   PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
@@ -92,7 +91,7 @@ enum {
   PREF_LEDPROFILE2 = (unsigned int)0b0000000000000010,  // SUPER BRIGHT BLUE
   PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011,  // SUPER BRIGHT WHITE
   
-  PREF_MASK        = (unsigned int)0b1111111100111111 // Which bits of the prefs register are mapped to actual prefs
+  PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
 #define IS_HH_CLOCK  ((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
 #define IS_HH_POTS   ((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
@@ -674,11 +673,6 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
   }
   else
   {
-    if(gPreferences & PREF_DISABLERMODE && (numParams > 0 && statusByte & 0x90 && param2 == 0x00))
-    {
-      statusByte -= 0x90;
-      statusByte |= 0x80;
-    }
     // send channel message
     if(midiOutRunningStatus != statusByte)
     {
