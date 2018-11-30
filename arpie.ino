@@ -23,9 +23,10 @@
 //    5.0   Jun2017  Release A5
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
+//    5.3   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 //
 #define VERSION_HI  5
-#define VERSION_LO  2
+#define VERSION_LO  3
 
 //
 // INCLUDE FILES
@@ -45,7 +46,6 @@
 
 
 // Hack header pulse clock config
-#define SYNCH_TICK_TO_PULSE_RATIO  12
 #define SYNCH_CLOCK_PULSE_WIDTH    10
 #define SYNCH_CLOCK_MIN_PERIOD     20
 #define SYNCH_CLOCK_INVERT         0
@@ -55,10 +55,6 @@
 //
 enum {
   PREF_HACKHEADER=       (unsigned int)0b1111111100000000,
-  PREF_HH_TYPE=          (unsigned int)0b1000000000000000,  
-  PREF_HHTYPE_POTS=      (unsigned int)0b0000000000000000,
-  
-  PREF_HH_SYNCHTAB=      (unsigned int)0b1000000000000000,
 
   PREF_HHSW_PB3=         (unsigned int)0b0100000000000000,
  
@@ -93,8 +89,11 @@ enum {
   
   PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
-#define IS_HH_CLOCK  ((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
-#define IS_HH_POTS   ((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
+#define IS_HH_SYNCTAB (((gPreferences>>8)&0xFD) == 0x80) 
+#define IS_HH_CVTAB   (((gPreferences>>8)&0xFD) == 0x81)
+#define IS_HH_POTS    (((gPreferences>>8)&0x80) == 0x00)
+#define IS_HH_CLOCKOUT   (((gPreferences>>8)&0xFC) == 0x80) // can be either the synctab or the cvtab
+#define IS_HH_16THCLOCK   (((gPreferences>>8)&0xFE) == 0x82) // can be either the synctab or the cvtab
 
 
 // The preferences word
@@ -861,6 +860,8 @@ byte synchStartSource;                         // In ext sync mode, remembers ho
 volatile byte synchAuxEvents[8];               // buffer to store incoming sync events from the aux port
 volatile byte synchAuxEventsHead;
 volatile byte synchAuxEventsTail;
+byte synchClockOutPin;
+byte synchTickToPulseRatio;
 
 #define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
 
@@ -869,12 +870,13 @@ volatile byte synchAuxEventsTail;
 #define P_SYNCH_HH_DETECT                19
 #define P_SYNCH_HH_CLKOUT                18  
 #define P_SYNCH_HH_CLKIN                 14
+#define P_CVTAB_HH_CLKOUT                11  
 #if SYNCH_HH_CLOCK_ACTIVELOW    
-  #define SYNCH_HH_CLOCK_ON           PORTC &= ~(1<<4)
-  #define SYNCH_HH_CLOCK_OFF          PORTC |= (1<<4)
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
 #else
-  #define SYNCH_HH_CLOCK_OFF          PORTC &= ~(1<<4)
-  #define SYNCH_HH_CLOCK_ON           PORTC |= (1<<4)
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
 #endif
 #define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
 #define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
@@ -966,7 +968,7 @@ void synchTick(byte source)
   if(synchFlags & SYNCH_SEND_CLOCK)
     synchTicksToSend++;
     
-  if(IS_HH_CLOCK)
+  if(IS_HH_CLOCKOUT)
     synchPulseClockTickCount++;
 }
 
@@ -1128,7 +1130,14 @@ void synchInit()
   synchThisPulseClockPeriod = 0;         
   synchInternalTicksSinceLastPulseClock = 0;
   
-  if(IS_HH_CLOCK) {
+  synchClockOutPin = 0;
+  if(IS_HH_16THCLOCK) {
+    synchTickToPulseRatio = 6; // sixteenths
+  }
+  else {
+    synchTickToPulseRatio = 12; // eigths    
+  }
+  if(IS_HH_SYNCTAB) {
      pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
      pinMode(P_SYNCH_HH_CLKIN, INPUT);
      pinMode(P_SYNCH_HH_DETECT, INPUT_PULLUP);
@@ -1144,6 +1153,11 @@ void synchInit()
      {
        SYNCH_HH_DISABLE_PCINT;                    // no pin change interrupt
      } 
+    synchClockOutPin = P_SYNCH_HH_CLKOUT;
+  }
+  else if(IS_HH_CVTAB) {
+     pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
+    synchClockOutPin = P_CVTAB_HH_CLKOUT;
   }
   interrupts();
 }
@@ -1167,16 +1181,16 @@ void synchRun(unsigned long milliseconds)
   { 
     if(synchThisPulseClockPeriod) // have we got a clock period measurement?
     {      
-      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / SYNCH_TICK_TO_PULSE_RATIO);  // infer bpm
+      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / synchTickToPulseRatio);  // infer bpm
       synchThisPulseClockPeriod = 0;
       synchNextInternalTick = milliseconds;  // tick immediately
-      while(synchInternalTicksSinceLastPulseClock++ < SYNCH_TICK_TO_PULSE_RATIO)
+      while(synchInternalTicksSinceLastPulseClock++ < synchTickToPulseRatio)
         synchTick(SYNCH_SOURCE_INTERNAL); // make up any missed ticks (when tempo is being increased)
       synchInternalTicksSinceLastPulseClock = 0;
     }
     
     if(synchClockSendState == SYNCH_HH_EXT_CLOCK && 
-      synchInternalTicksSinceLastPulseClock >= SYNCH_TICK_TO_PULSE_RATIO)
+      synchInternalTicksSinceLastPulseClock >= synchTickToPulseRatio)
     {
       // hold off any ticks until the next external pulse. External tempo is being reduced
     }
@@ -1235,11 +1249,10 @@ void synchRun(unsigned long milliseconds)
     if(!synchClockSendState)
     {
       // check if a new pulse is required
-      if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
+      if(synchPulseClockTickCount>=synchTickToPulseRatio)
       {
-        // start a new pulse
-        SYNCH_HH_CLOCK_ON;
-        synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
+         SYNCH_HH_CLOCK_ON;
+        synchPulseClockTickCount -= synchTickToPulseRatio;
         synchClockSendState = 1;
       }
     }
