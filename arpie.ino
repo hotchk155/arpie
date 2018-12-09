@@ -693,7 +693,7 @@ void midiWrite(byte statusByte, byte param1, byte param2, byte numParams, unsign
 
 ////////////////////////////////////////////////////////////////////////////////
 // MIDI READ
-byte midiRead(unsigned long milliseconds, byte passThru)
+byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
 {
 
   // loop while we have incoming MIDI serial data
@@ -765,8 +765,9 @@ byte midiRead(unsigned long milliseconds, byte passThru)
           {
           case 0x80: // note off
           case 0x90: // note on
-            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_NOTES) || !!(uiHoldType & UI_HOLD_LOCKED))
+            if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_NOTES) || isMidiLockout) {
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                
+            }
             return midiInRunningStatus; // return to the arp engine
           case 0xB0: // CC
             if(!!(midiOptions & MIDI_OPTS_FILTER_CHMODE)) {
@@ -1943,12 +1944,14 @@ void arpReadInput(unsigned long milliseconds)
 {
   int i;
   char noteIndexInChord; 
+  byte midiLockout = (!!(uiHoldType & UI_HOLD_LOCKED) &&  !(arpOptions & ARP_OPT_MIDITRANSPOSE));
   
   // we may have multiple notes to read
   for(;;)
   {
+    
     // read the MIDI port
-    byte msg = midiRead(milliseconds, 0);      
+    byte msg = midiRead(milliseconds, 0, midiLockout);      
     if(!msg)
       break;      
       
