@@ -34,6 +34,7 @@
 #include <avr/interrupt.h>  
 #include <avr/io.h>
 #include <EEPROM.h>
+#include <Wire.h>
 
 // Midi CC numbers to associate with hack header inputs
 #define HH_CC_PC0             16
@@ -50,6 +51,7 @@
 #define SYNCH_CLOCK_MIN_PERIOD     20
 #define SYNCH_CLOCK_INVERT         0
 
+#define DAC_ADDR 0b1100000
 //
 // PREFERENCES WORD
 //
@@ -95,6 +97,7 @@ enum {
 #define IS_HH_CLOCKOUT   (((gPreferences>>8)&0xFC) == 0x80) // can be either the synctab or the cvtab
 #define IS_HH_16THCLOCK   (((gPreferences>>8)&0xFE) == 0x82) // can be either the synctab or the cvtab
 
+#define P_HH_CVTAB_GATE 14
 
 // The preferences word
 unsigned int gPreferences;
@@ -1545,6 +1548,16 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
       arpLastVelocityCC = velocity;
     }  
     midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);          
+    if(IS_HH_CVTAB) {
+      int cv = ((note * 500)/12);
+      while(cv<0) cv+=500;
+      while(cv>4095) cv-=500;
+      Wire.beginTransmission(DAC_ADDR); 
+      Wire.write((cv>>8)&0xF); 
+      Wire.write((byte)cv); 
+      Wire.endTransmission();       
+      digitalWrite(P_HH_CVTAB_GATE,HIGH);      
+    }
     byte n = (1<<(note&0x07));
     arpPlayingNotes[note>>3] |= n;
     if(noteSet)
@@ -1558,6 +1571,7 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
 // present in it are left alone and remain playing
 void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
 { 
+  byte gateOff = 0;
   for(int i=0; i<16; ++i)  
   {
     if(arpPlayingNotes[i])
@@ -1573,12 +1587,16 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
           {
             midiWrite(MIDI_MK_NOTE, note, 0, 2, milliseconds);
             arpPlayingNotes[i] &= ~m;
+            gateOff = 1;
           }
         }
         ++note;
         m<<=1;
       }
     }
+  }
+  if(gateOff && IS_HH_CVTAB) {
+    digitalWrite(P_HH_CVTAB_GATE,LOW);        
   }
 }
 
@@ -3546,6 +3564,15 @@ void hhInit()
   Pot2.reset();
   Pot3.reset();
   hhTime = 0;
+
+  if(IS_HH_CVTAB) {
+    Wire.begin();
+    Wire.beginTransmission(DAC_ADDR); 
+    Wire.write(0b10011001); // buffered Vref, powered up, 2x
+    Wire.endTransmission();       
+    pinMode(P_HH_CVTAB_GATE,OUTPUT);    
+    digitalWrite(P_HH_CVTAB_GATE,LOW);    
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
