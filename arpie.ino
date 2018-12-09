@@ -732,11 +732,11 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
       midiInRunningStatus = ch; 
       switch(ch & 0xF0)
       {
-      case 0xA0: //  Aftertouch  1  key  touch  
       case 0xC0: //  Patch change  1  instrument #   
       case 0xD0: //  Channel Pressure  1  pressure  
         midiNumParams = 1;
         break;    
+      case 0xA0: //  Aftertouch  2  key  touch  
       case 0x80: //  Note-off  2  key  velocity  
       case 0x90: //  Note-on  2  key  veolcity  
       case 0xB0: //  Continuous controller  2  controller #  controller value  
