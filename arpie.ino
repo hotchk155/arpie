@@ -566,9 +566,10 @@ enum {
   EEPROM_PREFS0,
   EEPROM_PREFS1,
   EEPROM_ARPOPTIONS0,
-  EEPROM_ARPOPTIONS1
+  EEPROM_ARPOPTIONS1,
+  EEPROM_MIDI_OPTS2
 };
-#define EEPROM_MAGIC_COOKIE_VALUE  0x22
+#define EEPROM_MAGIC_COOKIE_VALUE  0x23
 
 ////////////////////////////////////////////////////////////////////////////////
 // SET A VALUE IN EEPROM
@@ -616,6 +617,7 @@ char midiParamIndex;
 byte midiSendChannel;
 byte midiReceiveChannel;
 byte midiOptions;
+byte midiOptions2;
 
 // midi options
 #define MIDI_OPTS_SEND_CHMSG       0x01
@@ -626,14 +628,19 @@ byte midiOptions;
 #define MIDI_OPTS_FILTER_CHMODE    0x20
 #define MIDI_OPTS_VOLCAFM_VEL      0x40
 #define MIDI_OPTS_LOCAL_OFF        0x80
+#define MIDI_OPTS2_USE_NOTE_OFF     0x01
 
 #define MIDI_OPTS_MAX_VALUE        0xFF
 #define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
 
+#define MIDI_OPTS2_MAX_VALUE        0x01
+#define MIDI_OPTS2_DEFAULT_VALUE    0
+
 // macros
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
 #define MIDI_IS_NOTE_OFF(msg) ((msg & 0xf0) == 0x80)
-#define MIDI_MK_NOTE (0x90 | midiSendChannel)
+#define MIDI_MK_NOTE_ON (0x90 | midiSendChannel)
+#define MIDI_MK_NOTE_OFF (0x80 | midiSendChannel)
 #define MIDI_MK_CTRL_CHANGE (0xB0 | midiSendChannel)
 #define MIDI_MK_PITCHBEND   (0xE0 | midiSendChannel)
 
@@ -662,6 +669,7 @@ void midiInit()
   midiSendChannel = eepromGet(EEPROM_OUTPUT_CHAN, 0, 15, 0);
   midiReceiveChannel = eepromGet(EEPROM_INPUT_CHAN, 0, 15, MIDI_OMNI);
   midiOptions = eepromGet(EEPROM_MIDI_OPTS, 0, MIDI_OPTS_MAX_VALUE, MIDI_OPTS_DEFAULT_VALUE);
+  midiOptions2 = eepromGet(EEPROM_MIDI_OPTS2, 0, MIDI_OPTS2_MAX_VALUE, MIDI_OPTS2_DEFAULT_VALUE);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -809,7 +817,7 @@ void midiPanic()
 {  
   midiOutRunningStatus = 0;
   for(int i=0;i<128;++i)
-    midiWrite(MIDI_MK_NOTE, i, 0, 2, millis());    
+    midiWrite(MIDI_MK_NOTE_OFF, i, 0, 2, millis());    
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -828,6 +836,17 @@ void midiLocalOff(byte local_off)
     midiWrite(0xB0 | i, LOCAL_ON_CC, local_off? 0: 127, 2, millis());    
   }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// MIDI NOTE OFF
+// allows specific use of MIDI NOTE OFF 0x80 rather than zero velocity 
+// NOTE ON (which is usually used with running status to save bandwidth)
+void midiNoteOff(byte note, unsigned long milliseconds) {
+  midiWrite(
+    (midiOptions2 & MIDI_OPTS2_USE_NOTE_OFF)?MIDI_MK_NOTE_OFF:MIDI_MK_NOTE_ON, 
+    note, 0, 2, milliseconds);  
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -1548,7 +1567,7 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
       midiWrite(MIDI_MK_CTRL_CHANGE, VELOCITY_CC, velocity, 2, millis());    
       arpLastVelocityCC = velocity;
     }  
-    midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);          
+    midiWrite(MIDI_MK_NOTE_ON, note, velocity, 2, milliseconds);          
     if(IS_HH_CVTAB) {
       int cv = ((note * 500)/12);
       while(cv<0) cv+=500;
@@ -1586,7 +1605,7 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
         {
           if(!excludedNoteSet || !(excludedNoteSet[i]&m))
           {
-            midiWrite(MIDI_MK_NOTE, note, 0, 2, milliseconds);
+            midiNoteOff(note, milliseconds);
             arpPlayingNotes[i] &= ~m;
             gateOff = 1;
           }
@@ -2821,6 +2840,12 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     midiLocalOff(midiOptions & MIDI_OPTS_LOCAL_OFF);    
     forceRefresh = 1;
   }
+  else if(8 == keyPress)
+  {    
+    midiOptions2 ^= MIDI_OPTS2_USE_NOTE_OFF;
+    eepromSet(EEPROM_MIDI_OPTS2, midiOptions2);    
+    forceRefresh = 1;
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2832,6 +2857,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     uiLeds[5] = !!(midiOptions&MIDI_OPTS_FILTER_CHMODE)? uiLedBright : uiLedDim;    
     uiLeds[6] = !!(midiOptions&MIDI_OPTS_VOLCAFM_VEL)? uiLedBright : uiLedDim;    
     uiLeds[7] = !!(midiOptions&MIDI_OPTS_LOCAL_OFF)? uiLedBright : uiLedDim;    
+    uiLeds[8] = !!(midiOptions2&MIDI_OPTS2_USE_NOTE_OFF)? uiLedBright : uiLedDim;        
   }    
 }
 
@@ -3725,6 +3751,7 @@ void setup() {
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
     eepromSet(EEPROM_MIDI_OPTS, MIDI_OPTS_DEFAULT_VALUE);
+    eepromSet(EEPROM_MIDI_OPTS2, MIDI_OPTS2_DEFAULT_VALUE);
     eepromSet(EEPROM_SYNCH_SOURCE,0);
     eepromSet(EEPROM_SYNCH_SEND,0);  
     prefsSave();
