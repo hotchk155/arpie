@@ -122,6 +122,106 @@ extern byte editFlags;
 #define SYNCH_PLAY_ADVANCE             0x0800    // Whether to advance play counter to next step
 extern volatile unsigned int synchFlags;
 
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+// DEFINE THE PATCH CONTENT
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+#define ARP_PATTERN_VERSION   0xA0   // identifies pattern version in EEPROM
+
+// sizes of arrays
+#define ARP_MAX_CHORD     12      // max notes in a chord
+#define ARP_MAX_PATTERN   16      // max steps in a rhythmic pattern
+#define ARP_MAX_TRAN_SEQ  16      // max steps in the transpose sequence
+
+// bit flags for the pattern
+#define ARP_PATN_PLAY     0x01
+#define ARP_PATN_GLIDE    0x02
+#define ARP_PATN_TIE      0x04
+#define ARP_PATN_ACCENT   0x08
+#define ARP_PATN_OCTAVE   0x10
+#define ARP_PATN_OCTDN    0x20
+#define ARP_PATN_4TH      0x40
+#define ARP_PATN_PLAYTHRU 0x80
+
+// Values for arpType
+enum 
+{
+  ARP_TYPE_UP = 0,
+  ARP_TYPE_DOWN,
+  ARP_TYPE_UP_DOWN,
+  ARP_TYPE_RANDOM,
+  ARP_TYPE_MANUAL,
+  ARP_TYPE_POLYGATE
+};
+
+// Values for arpInsertMode
+enum
+{
+  ARP_INSERT_OFF = 0,
+  ARP_INSERT_HI,
+  ARP_INSERT_LOW,
+  ARP_INSERT_3_1,
+  ARP_INSERT_4_2
+};
+
+// Values for force to scale masks
+enum 
+{
+  //                               0123456789012345
+  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,  //no scale
+  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,  //diatonic modes
+  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,  //:
+  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,  //:
+  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,  //:
+  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,  //:
+  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,  //:
+  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010,  //:
+};
+
+// Force to scale mode for out of scale notes
+enum
+{
+    ARP_SCALE_ADJUST_SKIP   = (unsigned)0x0000,  // Out of scale notes are skipped
+    ARP_SCALE_ADJUST_MUTE   = (unsigned)0x1000,  // Out of scale notes are muted
+    ARP_SCALE_ADJUST_FLAT   = (unsigned)0x2000,  // Out of scale notes are flattened to bring them to scale
+    ARP_SCALE_ADJUST_SHARP  = (unsigned)0x3000,  // Out of scale notes are sharpened to bring them to scale
+    ARP_SCALE_ADJUST_TOGGLE = (unsigned)0x4000,  // Out of scale notes are sharpened/flattened alternately
+    
+    ARP_SCALE_ADJUST_MASK   = (unsigned)0x7000,        
+    ARP_SCALE_TOGGLE_FLAG   = (unsigned)0x8000
+};
+
+// structure to store status of the arp as a "patch"
+typedef struct {
+  byte ver;
+  int synchPlayRate;                    // ratio of ticks per arp note
+  byte arpType;                         // arpeggio type
+  char arpOctaveShift;                  // octave transpose
+  byte arpOctaveSpan;                   // number of octaves to span with the arpeggio
+  byte arpInsertMode;                   // additional note insertion mode
+  byte arpVelocityMode;                 // (0 = original, 1 = override)
+  byte arpVelocity;                     // velocity 
+  byte arpAccentVelocity;               // accent velocity
+  byte arpGateLength;                   // gate length (0 = tie notes, 1-127 = fraction of beat)
+  char arpTranspose;                    // up/down transpose
+  char arpForceToScaleRoot;             // Defines the root note of the scale (0 = C)
+  unsigned int arpForceToScaleMask;     // Force to scale interval mask (defines the scale)
+  unsigned int arpChord[ARP_MAX_CHORD]; // Chord notes
+  int arpChordLength;                   // number of notes in the chord
+  byte arpPattern[ARP_MAX_PATTERN];     
+  byte arpPatternLength;                // user-defined pattern length (1-16)
+  char arpTransposeSequence[ARP_MAX_TRAN_SEQ];
+  byte arpTransposeSequenceLen;  
+} ARP_PATCH;
+
+// the active patch
+ARP_PATCH _P;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -863,7 +963,6 @@ void midiNoteOff(byte note, unsigned long milliseconds) {
 
 // variables
 volatile unsigned long synchTickCount;         // tick count
-volatile int synchPlayRate;                    // ratio of ticks per arp note
 volatile unsigned long synchPlayIndex;         // arp note count
 volatile int synchBPM;                         // internal synch bpm
 volatile float synchInternalTickPeriod;        // internal synch millseconds per tick
@@ -956,7 +1055,7 @@ void synchTick(byte source)
     else {
       ++synchTickCount;
     }
-    if(!(synchTickCount % synchPlayRate))//ready for next step?
+    if(!(synchTickCount % _P.synchPlayRate))//ready for next step?
     {
       // store step length in ms.. this will be used
       // when calculating step length
@@ -1128,7 +1227,7 @@ void synchInit()
   synchStartSource = SYNCH_SOURCE_NONE;  
   
   // set default play rate
-  synchPlayRate = SYNCH_RATE_16;
+  _P.synchPlayRate = SYNCH_RATE_16;
 
   synchLastStepTime = 0;
   synchStepPeriod = 0;
@@ -1342,90 +1441,19 @@ void synchAuxRead()
 //
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-
 // Macro defs
-#define ARP_MAX_CHORD 12
+//#define ARP_MAX_CHORD 12
 #define ARP_MAKE_NOTE(note, vel) ((((unsigned int)vel)<<8)|(note))
 #define ARP_GET_NOTE(x) ((x)&0x7f)
 #define ARP_GET_VELOCITY(x) (((x)>>8)&0x7f)
 #define ARP_MAX_SEQUENCE 60
 #define ARP_NOTE_HELD 0x8000
 #define ARP_PLAY_THRU 0x8000
-#define ARP_PATN_PLAY     0x01
-#define ARP_PATN_GLIDE    0x02
-#define ARP_PATN_TIE      0x04
-#define ARP_PATN_ACCENT   0x08
-#define ARP_PATN_OCTAVE   0x10
-#define ARP_PATN_OCTDN    0x20
-#define ARP_PATN_4TH      0x40
-#define ARP_PATN_PLAYTHRU 0x80
 
-// Values for arpType
-enum 
-{
-  ARP_TYPE_UP = 0,
-  ARP_TYPE_DOWN,
-  ARP_TYPE_UP_DOWN,
-  ARP_TYPE_RANDOM,
-  ARP_TYPE_MANUAL,
-  ARP_TYPE_POLYGATE
-};
+char arpChordRootNote;                // root note of the chord
 
-// Values for arpInsertMode
-enum
-{
-  ARP_INSERT_OFF = 0,
-  ARP_INSERT_HI,
-  ARP_INSERT_LOW,
-  ARP_INSERT_3_1,
-  ARP_INSERT_4_2
-};
-
-// Values for force to scale masks
-enum 
-{
-  //                               0123456789012345
-  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,  //no scale
-  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,  //diatonic modes
-  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,  //:
-  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,  //:
-  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,  //:
-  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,  //:
-  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,  //:
-  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010,  //:
-};
-
-// Force to scale mode for out of scale notes
-enum
-{
-    ARP_SCALE_ADJUST_SKIP   = (unsigned)0x0000,  // Out of scale notes are skipped
-    ARP_SCALE_ADJUST_MUTE   = (unsigned)0x1000,  // Out of scale notes are muted
-    ARP_SCALE_ADJUST_FLAT   = (unsigned)0x2000,  // Out of scale notes are flattened to bring them to scale
-    ARP_SCALE_ADJUST_SHARP  = (unsigned)0x3000,  // Out of scale notes are sharpened to bring them to scale
-    ARP_SCALE_ADJUST_TOGGLE = (unsigned)0x4000,  // Out of scale notes are sharpened/flattened alternately
-    
-    ARP_SCALE_ADJUST_MASK   = (unsigned)0x7000,        
-    ARP_SCALE_TOGGLE_FLAG   = (unsigned)0x8000
-};
-
-// ARP PARAMETERS
-byte arpType;              // arpeggio type
-char arpOctaveShift;       // octave transpose
-byte arpOctaveSpan;        // number of octaves to span with the arpeggio
-byte arpInsertMode;        // additional note insertion mode
-byte arpVelocityMode;      // (0 = original, 1 = override)
-byte arpVelocity;          // velocity 
-byte arpAccentVelocity;    // accent velocity
-byte arpGateLength;        // gate length (0 = tie notes, 1-127 = fraction of beat)
-char arpTranspose;         // up/down transpose
-char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
-unsigned int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
-
-// CHORD INFO - notes held by user
-unsigned int arpChord[ARP_MAX_CHORD];
-int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
-char arpChordRootNote;
+
 
 // Manual chord selected by the user
 unsigned int arpManualChord;
@@ -1436,8 +1464,6 @@ int arpSequenceLength;     // number of notes in the sequence
 int arpSequenceIndex;
 
 // NOTE PATTERN - the rythmic pattern of played/muted notes
-byte arpPattern[ARP_MAX_SEQUENCE];
-byte arpPatternLength;   // user-defined pattern length (1-16)
 byte arpPatternIndex;    // position in the pattern (for display)
 
 byte arpRefresh;  // whether the pattern index is changed
@@ -1450,9 +1476,7 @@ unsigned long arpStopNoteTime;
 // used to time the length of a step
 unsigned long arpLastPlayAdvance;
 
-#define ARP_MAX_TRAN_SEQ 16
-char arpTransposeSequence[ARP_MAX_TRAN_SEQ];
-byte arpTransposeSequenceLen;
+//#define ARP_MAX_TRAN_SEQ 16
 byte arpTransposeSequencePos;
 unsigned int arpTransposeSequenceMask;
 
@@ -1517,28 +1541,28 @@ void arpInit()
   int i;
   
   //  arpHold = 0;
-  arpType = ARP_TYPE_UP;
-  arpOctaveShift = 0;
-  arpOctaveSpan = 1;
-  arpInsertMode = ARP_INSERT_OFF;
-  arpVelocity = 100;
-  arpAccentVelocity = 127;
-  arpVelocityMode = 1;
-  arpChordLength = 0;
+  _P.arpType = ARP_TYPE_UP;
+  _P.arpOctaveShift = 0;
+  _P.arpOctaveSpan = 1;
+  _P.arpInsertMode = ARP_INSERT_OFF;
+  _P.arpVelocity = 100;
+  _P.arpAccentVelocity = 127;
+  _P.arpVelocityMode = 1;
+  _P.arpChordLength = 0;
   arpNotesHeld = 0;
-  arpPatternLength = 16;
+  _P.arpPatternLength = 16;
   arpRefresh = 0;
   arpFlags = 0;
-  arpGateLength = 100;
+  _P.arpGateLength = 100;
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
-  arpTranspose = 0;
-  arpForceToScaleRoot=0;
-  arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
+  _P.arpTranspose = 0;
+  _P.arpForceToScaleRoot=0;
+  _P.arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
   arpChordRootNote = -1;
   arpSequenceIndex = 0;
   arpManualChord = 0;
-  arpTransposeSequenceLen = 0;
+  _P.arpTransposeSequenceLen = 0;
   arpTransposeSequencePos = 0;
   arpTransposeSequenceMask = 0;
   arpOptionsLoad();
@@ -1548,7 +1572,7 @@ void arpInit()
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
-    arpPattern[i] = ARP_PATN_PLAY;
+    _P.arpPattern[i] = ARP_PATN_PLAY;
 
   // no notes playing
   for(i=0;i<16;++i)
@@ -1624,7 +1648,7 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
 // CLEAR CHORD
 void arpClear()
 {
-  arpChordLength = 0;
+  _P.arpChordLength = 0;
   arpManualChord = 0;
   editFlags |= EDIT_FLAG_FORCE_REFRESH;
   arpFlags |= ARP_FLAG_REBUILD;
@@ -1636,11 +1660,11 @@ char arpCopyChord(int *dest)
 {
   char m =-1;
   int i;
-  for(i=0; i<arpChordLength; ++i)
+  for(i=0; i<_P.arpChordLength; ++i)
   {
-    dest[i] = arpChord[i];
-    if(m == -1 || arpChord[i] < m)
-      m = arpChord[i];
+    dest[i] = _P.arpChord[i];
+    if(m == -1 || _P.arpChord[i] < m)
+      m = _P.arpChord[i];
   }
   return m;
 }
@@ -1655,7 +1679,7 @@ char arpSortChord(int *dest)
   while(!sorted)
   {
     sorted = 1;
-    for(int i=0; i<arpChordLength-1; ++i)
+    for(int i=0; i<_P.arpChordLength-1; ++i)
     {
       if(ARP_GET_NOTE(dest[i]) > ARP_GET_NOTE(dest[i+1]))
       {
@@ -1666,7 +1690,7 @@ char arpSortChord(int *dest)
       }
     }
   }
- return arpChord[0];
+ return _P.arpChord[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1676,22 +1700,22 @@ void arpRandomizeChord(int *dest)
   int i,j;
 
   // clear destination buffer
-  for(i=0; i<arpChordLength; ++i)
+  for(i=0; i<_P.arpChordLength; ++i)
     dest[i] = 0;
 
   // loop through the source chord
-  for(i=0; i<arpChordLength; ++i)
+  for(i=0; i<_P.arpChordLength; ++i)
   {
     // loop until we find a place to 
     // put this note in dest buffer
     for(;;)
     {
       // look for a place
-      j = random(arpChordLength);
+      j = random(_P.arpChordLength);
       if(!dest[j])
       {
         // its empty, so we can use it
-        dest[j] = arpChord[i];
+        dest[j] = _P.arpChord[i];
         break;
       }
     }        
@@ -1708,12 +1732,12 @@ void arpBuildSequence()
   // sequence is empty if no chord notes present
   arpChordRootNote=-1;
   arpSequenceLength=0;
-  if(!arpChordLength)
+  if(!_P.arpChordLength)
     return;
 
   // sort the chord info if needed
   int chord[ARP_MAX_CHORD];
-  if(arpType == ARP_TYPE_UP || arpType == ARP_TYPE_DOWN || arpType == ARP_TYPE_UP_DOWN)
+  if(_P.arpType == ARP_TYPE_UP || _P.arpType == ARP_TYPE_DOWN || _P.arpType == ARP_TYPE_UP_DOWN)
     arpChordRootNote = arpSortChord(chord);
   else
     arpChordRootNote = arpCopyChord(chord);
@@ -1728,13 +1752,13 @@ void arpBuildSequence()
   while(nextPass && 
     tempSequenceLength < ARP_MAX_SEQUENCE)
   {
-    arpForceToScaleMask ^= ARP_SCALE_TOGGLE_FLAG;
-    byte adjustToggle = !!(arpForceToScaleMask & ARP_SCALE_TOGGLE_FLAG);
+    _P.arpForceToScaleMask ^= ARP_SCALE_TOGGLE_FLAG;
+    byte adjustToggle = !!(_P.arpForceToScaleMask & ARP_SCALE_TOGGLE_FLAG);
     
     // this loop is for the octave span
     int octaveCount;
     for(octaveCount = 0; 
-      octaveCount < arpOctaveSpan && tempSequenceLength < ARP_MAX_SEQUENCE; 
+      octaveCount < _P.arpOctaveSpan && tempSequenceLength < ARP_MAX_SEQUENCE; 
       ++octaveCount)
     {
       // Set up depending on arp type
@@ -1742,7 +1766,7 @@ void arpBuildSequence()
       int chordIndex;
       int lastChordIndex;
       int chordIndexDelta;      
-      switch(arpType)
+      switch(_P.arpType)
       {
       case ARP_TYPE_RANDOM:
         arpRandomizeChord(chord);
@@ -1751,16 +1775,16 @@ void arpBuildSequence()
       case ARP_TYPE_MANUAL:
       case ARP_TYPE_POLYGATE:
         chordIndex = 0;
-        lastChordIndex = arpChordLength - 1;
-        transpose = arpTranspose + 12 * (arpOctaveShift + octaveCount);    
+        lastChordIndex = _P.arpChordLength - 1;
+        transpose = _P.arpTranspose + 12 * (_P.arpOctaveShift + octaveCount);    
         chordIndexDelta = 1;
         nextPass = 0;
         break;          
 
       case ARP_TYPE_DOWN:
-        chordIndex = arpChordLength - 1;
+        chordIndex = _P.arpChordLength - 1;
         lastChordIndex = 0;
-        transpose = arpTranspose + 12 * (arpOctaveShift + arpOctaveSpan - octaveCount - 1);    
+        transpose = _P.arpTranspose + 12 * (_P.arpOctaveShift + _P.arpOctaveSpan - octaveCount - 1);    
         chordIndexDelta = -1;
         nextPass = 0;
         break;          
@@ -1770,20 +1794,20 @@ void arpBuildSequence()
         {
           // going up we can play all the notes
           chordIndex = 0;
-          lastChordIndex = arpChordLength - 1;
+          lastChordIndex = _P.arpChordLength - 1;
           chordIndexDelta = 1;
-          transpose = arpTranspose + 12 * (arpOctaveShift + octaveCount);    
-          if(octaveCount == arpOctaveSpan - 1)
+          transpose = _P.arpTranspose + 12 * (_P.arpOctaveShift + octaveCount);    
+          if(octaveCount == _P.arpOctaveSpan - 1)
             nextPass = 2;
         }
         else
         {
           // GOING DOWN!
           // Is the range just one octave?
-          if(arpOctaveSpan == 1)
+          if(_P.arpOctaveSpan == 1)
           {
             // On the way down we don't play top or bottom notes of the chord
-            chordIndex = arpChordLength - 2;
+            chordIndex = _P.arpChordLength - 2;
             lastChordIndex = 1;
             nextPass = 0;
           }
@@ -1791,14 +1815,14 @@ void arpBuildSequence()
           else if(octaveCount == 0)
           {
             // the top note is skipped, the bottom note can be played
-            chordIndex = arpChordLength - 2;
+            chordIndex = _P.arpChordLength - 2;
             lastChordIndex = 0;
           }
           // are we on the bottom octave of the descent?
-          else if(octaveCount == arpOctaveSpan - 1)
+          else if(octaveCount == _P.arpOctaveSpan - 1)
           {
             // top note can be played but bottom note is not
-            chordIndex = arpChordLength - 1;
+            chordIndex = _P.arpChordLength - 1;
             lastChordIndex = 1;
 
             // this the the last octave to play
@@ -1808,10 +1832,10 @@ void arpBuildSequence()
           {
             // this is not first or last octave of the descent, so there
             // is no need to skip any of the notes
-            chordIndex = arpChordLength - 1;
+            chordIndex = _P.arpChordLength - 1;
             lastChordIndex = 0;
           }
-          transpose = arpTranspose + 12 * (arpOctaveShift + arpOctaveSpan - octaveCount - 1);    
+          transpose = _P.arpTranspose + 12 * (_P.arpOctaveShift + _P.arpOctaveSpan - octaveCount - 1);    
           chordIndexDelta = -1;
         }
         break;
@@ -1819,7 +1843,7 @@ void arpBuildSequence()
 
       // Write notes from the chord into the arpeggio sequence
       while(chordIndex >= 0 && 
-        chordIndex < arpChordLength && 
+        chordIndex < _P.arpChordLength && 
         tempSequenceLength < ARP_MAX_SEQUENCE)
       {
         // fetch the current note
@@ -1831,12 +1855,12 @@ void arpBuildSequence()
         note += transpose;
 
         // force to scale
-        int scaleNote = note - arpForceToScaleRoot;
+        int scaleNote = note - _P.arpForceToScaleRoot;
         while(scaleNote<0)
           scaleNote+=12;
-        if(!(arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
+        if(!(_P.arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
         {
-          switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+          switch(_P.arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
           { 
               case ARP_SCALE_ADJUST_SKIP: 
                 skipNote = 1;
@@ -1892,7 +1916,7 @@ void arpBuildSequence()
 
   int i, j;
   arpSequenceLength = 0;
-  if(arpType == ARP_TYPE_POLYGATE)
+  if(_P.arpType == ARP_TYPE_POLYGATE)
   {
       // Polyphonic gate mode, copy the notes over and flag to be 
       // played at the same time
@@ -1903,7 +1927,7 @@ void arpBuildSequence()
   {
     // we have the expanded sequence for one octave... now we need to 
     // perform any necessary note insertions
-    switch(arpInsertMode)
+    switch(_P.arpInsertMode)
     {
     case ARP_INSERT_OFF:
       for(i=0; i<tempSequenceLength; ++i)
@@ -1991,7 +2015,7 @@ void arpReadInput(unsigned long milliseconds)
          // transpose things
          if(arpChordRootNote != -1)
          {
-            arpTranspose = note - arpChordRootNote;                        
+            _P.arpTranspose = note - arpChordRootNote;                        
             arpFlags |= ARP_FLAG_REBUILD;
             editFlags |= EDIT_FLAG_FORCE_REFRESH;
          }
@@ -2003,11 +2027,11 @@ void arpReadInput(unsigned long milliseconds)
         // to see if it is already part of the chord      
         noteIndexInChord = -1;
         arpNotesHeld = 0;
-        for(i=0;i<arpChordLength;++i)
+        for(i=0;i<_P.arpChordLength;++i)
         {        
-          if(ARP_GET_NOTE(arpChord[i])== note)
+          if(ARP_GET_NOTE(_P.arpChord[i])== note)
             noteIndexInChord = i;
-          if(arpChord[i] & ARP_NOTE_HELD)
+          if(_P.arpChord[i] & ARP_NOTE_HELD)
             arpNotesHeld++;
         }
   
@@ -2015,9 +2039,9 @@ void arpReadInput(unsigned long milliseconds)
         if(noteIndexInChord >= 0 && arpNotesHeld)
         {
           // Mark the key as held. There is no change to the arpeggio
-          if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+          if(!(_P.arpChord[noteIndexInChord] & ARP_NOTE_HELD))
           {        
-            arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
+            _P.arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
             arpNotesHeld++;
           }
         }
@@ -2027,7 +2051,7 @@ void arpReadInput(unsigned long milliseconds)
           // we need to restart play
           if(!arpNotesHeld)
           {
-            arpChordLength = 0;
+            _P.arpChordLength = 0;
             if(!!(uiHoldType & UI_HOLD_CHORD))
               synchFlags |= SYNCH_RESTART_ON_BEAT; // wait till next beat before restarting
             else
@@ -2035,11 +2059,11 @@ void arpReadInput(unsigned long milliseconds)
           }
   
           // insert the new note into the chord                   
-          if(arpChordLength < ARP_MAX_CHORD-1)
+          if(_P.arpChordLength < ARP_MAX_CHORD-1)
           {        
-            arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
-            arpChord[arpChordLength] |= ARP_NOTE_HELD;
-            arpChordLength++;
+            _P.arpChord[_P.arpChordLength] = ARP_MAKE_NOTE(note,velocity);
+            _P.arpChord[_P.arpChordLength] |= ARP_NOTE_HELD;
+            _P.arpChordLength++;
             arpNotesHeld++;
   
             // flag that the arp sequence needs to be rebuilt
@@ -2056,15 +2080,15 @@ void arpReadInput(unsigned long milliseconds)
       // the chord are actually still held
       noteIndexInChord = -1;
       arpNotesHeld = 0;
-      for(i=0; i<arpChordLength; ++i)
+      for(i=0; i<_P.arpChordLength; ++i)
       {
         // did we find the released key in the chord?
-        if(ARP_GET_NOTE(arpChord[i]) == note)
+        if(ARP_GET_NOTE(_P.arpChord[i]) == note)
         {
-          arpChord[i] &= ~ARP_NOTE_HELD;
+          _P.arpChord[i] &= ~ARP_NOTE_HELD;
           noteIndexInChord = i;
         }
-        else if(arpChord[i] & ARP_NOTE_HELD)
+        else if(_P.arpChord[i] & ARP_NOTE_HELD)
         {
           arpNotesHeld++;
         }
@@ -2076,11 +2100,11 @@ void arpReadInput(unsigned long milliseconds)
 
         // shift higher notes down one position
         // to remove the released note
-        for(i = noteIndexInChord;i < arpChordLength-1; ++i)
-          arpChord[i] = arpChord[i+1];
+        for(i = noteIndexInChord;i < _P.arpChordLength-1; ++i)
+          _P.arpChord[i] = _P.arpChord[i+1];
 
         // rebuild the sequence
-        --arpChordLength;
+        --_P.arpChordLength;
         arpFlags |= ARP_FLAG_REBUILD;
       }
     }
@@ -2088,20 +2112,20 @@ void arpReadInput(unsigned long milliseconds)
 
   // check if the hold switch is released while
   // there are notes being held
-  if(!(uiHoldType & UI_HOLD_CHORD) && !arpNotesHeld && arpChordLength)
+  if(!(uiHoldType & UI_HOLD_CHORD) && !arpNotesHeld && _P.arpChordLength)
     arpClear();
 }
 
 void arpSetManualChord()
 {
-  arpChordLength = 0;
+  _P.arpChordLength = 0;
   arpNotesHeld = 0;  
   unsigned int m=1;
   for(int i=0; i<16; ++i) {
-     if((arpManualChord & m) && (arpChordLength < ARP_MAX_CHORD-1))
+     if((arpManualChord & m) && (_P.arpChordLength < ARP_MAX_CHORD-1))
      {        
-       arpChord[arpChordLength] = ARP_MAKE_NOTE(48+i,127);
-       arpChordLength++;
+       _P.arpChord[_P.arpChordLength] = ARP_MAKE_NOTE(48+i,127);
+       _P.arpChordLength++;
      }
      m<<=1;
   }
@@ -2134,30 +2158,30 @@ void arpRun(unsigned long milliseconds)
   }
 
   // have we updated the play position?
-  if(!!(synchFlags & SYNCH_PLAY_ADVANCE) && arpSequenceLength && arpPatternLength)
+  if(!!(synchFlags & SYNCH_PLAY_ADVANCE) && arpSequenceLength && _P.arpPatternLength)
   {                 
     // get the index into the pattern
-    arpPatternIndex = synchPlayIndex % arpPatternLength;
+    arpPatternIndex = synchPlayIndex % _P.arpPatternLength;
     
     // Check if we need to transpose
-    if(!arpPatternIndex && arpTransposeSequenceLen) {
-      arpTranspose = arpTransposeSequence[arpTransposeSequencePos];
+    if(!arpPatternIndex && _P.arpTransposeSequenceLen) {
+      _P.arpTranspose = _P.arpTransposeSequence[arpTransposeSequencePos];
       arpBuildSequence();                
       midiClearRunningStatus();
-      if(++arpTransposeSequencePos >= arpTransposeSequenceLen) {
+      if(++arpTransposeSequencePos >= _P.arpTransposeSequenceLen) {
         arpTransposeSequencePos = 0;
       }      
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
  
     // check there is a note (not a rest at this) point in the pattern
-    if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
+    if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
       byte glide = 0;
       byte newNote = 0;
-      if(arpPattern[arpPatternIndex] & ARP_PATN_TIE)
+      if(_P.arpPattern[arpPatternIndex] & ARP_PATN_TIE)
         glide = 2;
-      else if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
+      else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
         glide = 1;
         
       // Keep the sequence index within range      
@@ -2165,7 +2189,7 @@ void arpRun(unsigned long milliseconds)
         arpSequenceIndex = 0;
       
       // Loop to action play-through flag
-      byte playThru = (arpPattern[arpPatternIndex] & ARP_PATN_PLAYTHRU)? 2:0;      
+      byte playThru = (_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAYTHRU)? 2:0;      
       do {      
         if(playThru == 2) {
           playThru = 1;
@@ -2177,23 +2201,23 @@ void arpRun(unsigned long milliseconds)
 
         
         // Play the note if applicable
-        if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
+        if(_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
         {
           byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
-          if((arpPattern[arpPatternIndex] & ARP_PATN_OCTDN) && (note > 12))
+          if((_P.arpPattern[arpPatternIndex] & ARP_PATN_OCTDN) && (note > 12))
             note-=12;
-          else if((arpPattern[arpPatternIndex] & ARP_PATN_OCTAVE) && (note <= 115))
+          else if((_P.arpPattern[arpPatternIndex] & ARP_PATN_OCTAVE) && (note <= 115))
             note+=12;
-          else if((arpPattern[arpPatternIndex] & ARP_PATN_4TH) && (note >= 5))
+          else if((_P.arpPattern[arpPatternIndex] & ARP_PATN_4TH) && (note >= 5))
             note-=5;
           // determine note velocity
           byte velocity;          
           if(arpFlags & ARP_FLAG_MUTE)
             velocity = 0;
-          else if(arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
-            velocity = arpAccentVelocity;
+          else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
+            velocity = _P.arpAccentVelocity;
           else
-            velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+            velocity = _P.arpVelocityMode? _P.arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
     
           // start the note playing
           if(note > 0)
@@ -2225,10 +2249,10 @@ void arpRun(unsigned long milliseconds)
          // full step
          arpStopNoteTime = milliseconds + synchStepPeriod;
       }
-      else if(arpGateLength)
+      else if(_P.arpGateLength)
       {              
         // work out the gate length for this note
-        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 150;
+        arpStopNoteTime = milliseconds + (synchStepPeriod * _P.arpGateLength) / 150;
       }
       else
       {
@@ -2410,7 +2434,7 @@ void editPattern(char keyPress, byte forceRefresh)
 {
   if(keyPress != NO_VALUE)
   {
-    arpPattern[keyPress] = (arpPattern[keyPress] ^ ARP_PATN_PLAY);
+    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ ARP_PATN_PLAY);
     forceRefresh = 1;
   }
 
@@ -2418,7 +2442,7 @@ void editPattern(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i)
-      uiLeds[i] = (arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+      uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
 
     // only display the play position if we have a sequence
     if(arpSequenceLength) {
@@ -2459,7 +2483,7 @@ void editPatternExt(char keyPress, byte forceRefresh)
     
   if(keyPress != NO_VALUE)
   {
-    arpPattern[keyPress] = (arpPattern[keyPress] ^ extBit);
+    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit);
     forceRefresh = 1;
   }
 
@@ -2467,7 +2491,7 @@ void editPatternExt(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i) {
-      uiLeds[i] = (arpPattern[i] & extBit) ? uiLedMedium : (arpPattern[i] & ARP_PATN_PLAY) ? uiLedDim : 0;
+      uiLeds[i] = (_P.arpPattern[i] & extBit) ? uiLedMedium : (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedDim : 0;
     }
 
     // only display the play position if we have a sequence
@@ -2486,15 +2510,15 @@ void editPatternLength(char keyPress, byte forceRefresh)
   int i;
   if(keyPress >= 0 && keyPress <= 15)
   {
-    arpPatternLength = keyPress + 1;
+    _P.arpPatternLength = keyPress + 1;
     forceRefresh = 1;
   }
 
   if(forceRefresh)
   {    
     uiClearLeds();
-    uiSetLeds(0, arpPatternLength, uiLedDim);
-    uiLeds[arpPatternLength-1] = uiLedBright;
+    uiSetLeds(0, _P.arpPatternLength, uiLedDim);
+    uiLeds[_P.arpPatternLength-1] = uiLedBright;
   }
 }
 
@@ -2511,20 +2535,20 @@ void editArpType(char keyPress, byte forceRefresh)
   case 3: 
   case 4:
   case 5:
-    arpType = keyPress;
+    _P.arpType = keyPress;
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
     break;
   case 12: 
     for(i = 0;i<16;++i) {
-      arpPattern[i] &= ARP_PATN_PLAY;
-      if(arpPattern[i] & ARP_PATN_PLAY) {
+      _P.arpPattern[i] &= ARP_PATN_PLAY;
+      if(_P.arpPattern[i] & ARP_PATN_PLAY) {
         switch(random(8)) {
-          case 3: arpPattern[i] |= ARP_PATN_ACCENT; break;
-          case 4: arpPattern[i] |= ARP_PATN_TIE; break;
-          case 5: arpPattern[i] |= ARP_PATN_GLIDE; break;
-          case 6: arpPattern[i] |= ARP_PATN_OCTAVE; break;
-          case 7: arpPattern[i] |= ARP_PATN_GLIDE|ARP_PATN_OCTAVE; break;
+          case 3: _P.arpPattern[i] |= ARP_PATN_ACCENT; break;
+          case 4: _P.arpPattern[i] |= ARP_PATN_TIE; break;
+          case 5: _P.arpPattern[i] |= ARP_PATN_GLIDE; break;
+          case 6: _P.arpPattern[i] |= ARP_PATN_OCTAVE; break;
+          case 7: _P.arpPattern[i] |= ARP_PATN_GLIDE|ARP_PATN_OCTAVE; break;
         }
       }
     }
@@ -2532,19 +2556,19 @@ void editArpType(char keyPress, byte forceRefresh)
   case 13: 
     for(i = 0;i<16;++i) {
       switch(random(5)) {
-        case 0: case 1: arpPattern[i] = 0; break;
-        case 4: arpPattern[i] = ARP_PATN_PLAY|ARP_PATN_ACCENT; break;
-        default: arpPattern[i] = ARP_PATN_PLAY; break;
+        case 0: case 1: _P.arpPattern[i] = 0; break;
+        case 4: _P.arpPattern[i] = ARP_PATN_PLAY|ARP_PATN_ACCENT; break;
+        default: _P.arpPattern[i] = ARP_PATN_PLAY; break;
       }
     }
     break;
   case 14:
-    for(i = 0;i<16;++i) arpPattern[i] = 0;
-    arpPatternLength = 16;
+    for(i = 0;i<16;++i) _P.arpPattern[i] = 0;
+    _P.arpPatternLength = 16;
     break;
   case 15:
-    for(i = 0;i<16;++i) arpPattern[i] = ARP_PATN_PLAY;
-    arpPatternLength = 16;
+    for(i = 0;i<16;++i) _P.arpPattern[i] = ARP_PATN_PLAY;
+    _P.arpPatternLength = 16;
     break;
   } 
 
@@ -2552,7 +2576,7 @@ void editArpType(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     uiSetLeds(0, 6, uiLedMedium);
-    uiLeds[arpType] = uiLedBright;
+    uiLeds[_P.arpType] = uiLedBright;
     uiSetLeds(12, 4, uiLedMedium);
   }
 }
@@ -2613,7 +2637,7 @@ void editOctaveShift(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 6)
   {
-    arpOctaveShift = keyPress - 3;
+    _P.arpOctaveShift = keyPress - 3;
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
@@ -2623,7 +2647,7 @@ void editOctaveShift(char keyPress, byte forceRefresh)
     uiClearLeds();
     uiSetLeds(0, 7, uiLedDim);
     uiLeds[3] = uiLedMedium;
-    uiLeds[3 + arpOctaveShift] = uiLedBright;
+    uiLeds[3 + _P.arpOctaveShift] = uiLedBright;
   }
 }
 
@@ -2633,7 +2657,7 @@ void editOctaveSpan(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 3)
   {
-    arpOctaveSpan = keyPress + 1;
+    _P.arpOctaveSpan = keyPress + 1;
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
@@ -2642,7 +2666,7 @@ void editOctaveSpan(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     uiSetLeds(0, 4, uiLedDim);
-    uiLeds[arpOctaveSpan - 1] = uiLedBright;
+    uiLeds[_P.arpOctaveSpan - 1] = uiLedBright;
   }
 }
 
@@ -2669,7 +2693,7 @@ void editRate(char keyPress, byte forceRefresh)
 
   if(keyPress >= 0 && keyPress < 14)
   {
-    synchPlayRate = rates[keyPress];
+    _P.synchPlayRate = rates[keyPress];
     forceRefresh = 1;
   }
 
@@ -2685,7 +2709,7 @@ void editRate(char keyPress, byte forceRefresh)
     uiLeds[13] = uiLedMedium;
     for(int i=0; i<14; ++i)
     {
-      if(synchPlayRate == rates[i]) 
+      if(_P.synchPlayRate == rates[i]) 
       {
         uiLeds[i] = uiLedBright;
         break;
@@ -2700,22 +2724,22 @@ void editRate(char keyPress, byte forceRefresh)
 void editVelocity(char keyPress, byte forceRefresh)
 {
   byte vel[16] = {0,9,17,26,34,43,51,60,68,77,85,94,102,111,119,127};    
-  if(keyPress == 0 && !arpVelocity && arpVelocityMode)
+  if(keyPress == 0 && !_P.arpVelocity && _P.arpVelocityMode)
   {    
-    arpVelocityMode = 0;
+    _P.arpVelocityMode = 0;
     forceRefresh = 1;
   }
   else if(keyPress >= 0 && keyPress <= 15)
   {    
-    arpVelocity = vel[keyPress];
-    arpVelocityMode = 1;
+    _P.arpVelocity = vel[keyPress];
+    _P.arpVelocityMode = 1;
     forceRefresh = 1;
   }
 
   if(forceRefresh)
   {
     uiClearLeds();
-    if(!arpVelocityMode) 
+    if(!_P.arpVelocityMode) 
     {
       // original velocity
       uiLeds[0] = uiLedBright;
@@ -2725,7 +2749,7 @@ void editVelocity(char keyPress, byte forceRefresh)
     {
       for(int i=0; i<16; ++i)
       {
-        if(arpVelocity <= vel[i]) {
+        if(_P.arpVelocity <= vel[i]) {
           uiLeds[i] = uiLedBright;
           break;
         }
@@ -2739,7 +2763,7 @@ void editAccentVelocity(char keyPress, byte forceRefresh)
   byte vel[16] = {0,9,17,26,34,43,51,60,68,77,85,94,102,111,119,127};    
   if(keyPress >= 0 && keyPress <= 15)
   {    
-    arpAccentVelocity = vel[keyPress];
+    _P.arpAccentVelocity = vel[keyPress];
     forceRefresh = 1;
   }
 
@@ -2748,7 +2772,7 @@ void editAccentVelocity(char keyPress, byte forceRefresh)
     uiClearLeds();
     for(int i=15; i>=0; --i)
     {
-      if(arpAccentVelocity >= vel[i]) {
+      if(_P.arpAccentVelocity >= vel[i]) {
         uiLeds[i] = uiLedBright;
         break;
       }
@@ -2763,21 +2787,21 @@ void editGateLength(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 14)
   {    
-    arpGateLength = 10*(keyPress + 1);
+    _P.arpGateLength = 10*(keyPress + 1);
     forceRefresh = 1;
   }
   else if(keyPress == 15)
   {
-    arpGateLength = 0;
+    _P.arpGateLength = 0;
     forceRefresh = 1;
   }
   if(forceRefresh)
   {
     uiClearLeds();
-    if(arpGateLength > 0)
+    if(_P.arpGateLength > 0)
     {      
-      uiSetLeds(0, arpGateLength/10, uiLedMedium);
-      uiLeds[arpGateLength/10 - 1] = uiLedBright;
+      uiSetLeds(0, _P.arpGateLength/10, uiLedMedium);
+      uiLeds[_P.arpGateLength/10 - 1] = uiLedBright;
     }
     else
     {
@@ -2873,65 +2897,65 @@ void editInsertMode(char keyPress, byte forceRefresh)
   case 2: 
   case 3: 
   case 4:  
-    arpInsertMode = keyPress;
+    _P.arpInsertMode = keyPress;
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
     break;
   case 10:
-    arpChordLength=2+random(3);
-    for(i=0; i<arpChordLength; ++i)
+    _P.arpChordLength=2+random(3);
+    for(i=0; i<_P.arpChordLength; ++i)
     {
       for(;;)
       {
         note = 48+random(12); 
         for(j = 0; j<i; ++j)
         {
-          if(ARP_GET_NOTE(arpChord[j]) == note)
+          if(ARP_GET_NOTE(_P.arpChord[j]) == note)
             break;
         }
         if(j>=i)
           break;
       }           
-      arpChord[i] = ARP_MAKE_NOTE(note,64+random(64));
+      _P.arpChord[i] = ARP_MAKE_NOTE(note,64+random(64));
     }
     newChord = 1;
     break;
   case 11: // MIN7
-    arpChord[0] = ARP_MAKE_NOTE(48,127);       
-    arpChord[1] = ARP_MAKE_NOTE(51,127); 
-    arpChord[2] = ARP_MAKE_NOTE(55,127);
-    arpChord[3] = ARP_MAKE_NOTE(58,127);
-    arpChordLength = 4;
+    _P.arpChord[0] = ARP_MAKE_NOTE(48,127);       
+    _P.arpChord[1] = ARP_MAKE_NOTE(51,127); 
+    _P.arpChord[2] = ARP_MAKE_NOTE(55,127);
+    _P.arpChord[3] = ARP_MAKE_NOTE(58,127);
+    _P.arpChordLength = 4;
     newChord = 1;
     break;
   case 12: // MAJ7
-    arpChord[0] = ARP_MAKE_NOTE(48,127);       
-    arpChord[1] = ARP_MAKE_NOTE(52,127); 
-    arpChord[2] = ARP_MAKE_NOTE(55,127);
-    arpChord[3] = ARP_MAKE_NOTE(59,127);
-    arpChordLength = 4;
+    _P.arpChord[0] = ARP_MAKE_NOTE(48,127);       
+    _P.arpChord[1] = ARP_MAKE_NOTE(52,127); 
+    _P.arpChord[2] = ARP_MAKE_NOTE(55,127);
+    _P.arpChord[3] = ARP_MAKE_NOTE(59,127);
+    _P.arpChordLength = 4;
     newChord = 1;
     break;
   case 13: // DOM7
-    arpChord[0] = ARP_MAKE_NOTE(48,127);       
-    arpChord[1] = ARP_MAKE_NOTE(52,127); 
-    arpChord[2] = ARP_MAKE_NOTE(55,127);
-    arpChord[3] = ARP_MAKE_NOTE(58,127);
-    arpChordLength = 4;
+    _P.arpChord[0] = ARP_MAKE_NOTE(48,127);       
+    _P.arpChord[1] = ARP_MAKE_NOTE(52,127); 
+    _P.arpChord[2] = ARP_MAKE_NOTE(55,127);
+    _P.arpChord[3] = ARP_MAKE_NOTE(58,127);
+    _P.arpChordLength = 4;
     newChord = 1;
     break;
   case 14: // MIN
-    arpChord[0] = ARP_MAKE_NOTE(48,127);       
-    arpChord[1] = ARP_MAKE_NOTE(51,127);       
-    arpChord[2] = ARP_MAKE_NOTE(55,127);       
-    arpChordLength = 3;
+    _P.arpChord[0] = ARP_MAKE_NOTE(48,127);       
+    _P.arpChord[1] = ARP_MAKE_NOTE(51,127);       
+    _P.arpChord[2] = ARP_MAKE_NOTE(55,127);       
+    _P.arpChordLength = 3;
     newChord = 1;
     break;
   case 15: // MAJ
-    arpChord[0] = ARP_MAKE_NOTE(48,127);       
-    arpChord[1] = ARP_MAKE_NOTE(52,127);       
-    arpChord[2] = ARP_MAKE_NOTE(55,127);       
-    arpChordLength = 3;
+    _P.arpChord[0] = ARP_MAKE_NOTE(48,127);       
+    _P.arpChord[1] = ARP_MAKE_NOTE(52,127);       
+    _P.arpChord[2] = ARP_MAKE_NOTE(55,127);       
+    _P.arpChordLength = 3;
     newChord = 1;
     break;
   }
@@ -2945,7 +2969,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     uiSetLeds(0, 5, uiLedDim);
-    uiLeds[arpInsertMode] = uiLedBright;
+    uiLeds[_P.arpInsertMode] = uiLedBright;
     uiSetLeds(10, 6, uiLedMedium);
   }
 }
@@ -3165,15 +3189,15 @@ void editTranspose(char keyPress, byte forceRefresh)
       if(editFlags & EDIT_FLAG_IS_NEW) 
       {
         arpTransposeSequencePos = 0;
-        arpTransposeSequenceLen = 0;
+        _P.arpTransposeSequenceLen = 0;
         arpTransposeSequenceMask = 0;
         editFlags &= ~EDIT_FLAG_IS_NEW;
       }
       
-      if(arpTransposeSequenceLen < ARP_MAX_TRAN_SEQ - 1)      
+      if(_P.arpTransposeSequenceLen < ARP_MAX_TRAN_SEQ - 1)      
       {
         arpTransposeSequenceMask |= (1<<keyPress);
-        arpTransposeSequence[arpTransposeSequenceLen++] = keyPress - 3;
+        _P.arpTransposeSequence[_P.arpTransposeSequenceLen++] = keyPress - 3;
       }
     }
     else     
@@ -3181,9 +3205,9 @@ void editTranspose(char keyPress, byte forceRefresh)
       // pressing a note button while the transpose menu
       // button is not held will clear transpose sequence
       arpTransposeSequencePos = 0;
-      arpTransposeSequenceLen = 0;      
+      _P.arpTransposeSequenceLen = 0;      
       arpTransposeSequenceMask = 0;
-      arpTranspose = keyPress - 3;
+      _P.arpTranspose = keyPress - 3;
       arpFlags |= ARP_FLAG_REBUILD;
     }   
     forceRefresh = 1;
@@ -3205,8 +3229,8 @@ void editTranspose(char keyPress, byte forceRefresh)
       m<<=1;
     }
 
-    if(arpTranspose >= -3 && arpTranspose < 13)
-      uiLeds[arpTranspose + 3] = uiLedBright;
+    if(_P.arpTranspose >= -3 && _P.arpTranspose < 13)
+      uiLeds[_P.arpTranspose + 3] = uiLedBright;
   }
 }
 
@@ -3218,20 +3242,20 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
   {
     switch(keyPress)
     {
-      case 0: arpForceToScaleMask |= ARP_SCALE_CHROMATIC; break;
-      case 1: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_IONIAN; break;
-      case 2: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_DORIAN; break;
-      case 3: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_PHRYGIAN; break;
-      case 4: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LYDIAN; break;
-      case 5: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_MIXOLYDIAN; break;
-      case 6: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_AEOLIAN; break;
-      case 7: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LOCRIAN; break;
+      case 0: _P.arpForceToScaleMask |= ARP_SCALE_CHROMATIC; break;
+      case 1: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_IONIAN; break;
+      case 2: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_DORIAN; break;
+      case 3: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_PHRYGIAN; break;
+      case 4: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_LYDIAN; break;
+      case 5: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_MIXOLYDIAN; break;
+      case 6: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_AEOLIAN; break;
+      case 7: _P.arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; _P.arpForceToScaleMask |= ARP_SCALE_LOCRIAN; break;
       
-      case 11: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SKIP; break;
-      case 12: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_MUTE; break;
-      case 13: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_FLAT; break;
-      case 14: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SHARP; break;
-      case 15: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_TOGGLE; break;
+      case 11: _P.arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; _P.arpForceToScaleMask |= ARP_SCALE_ADJUST_SKIP; break;
+      case 12: _P.arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; _P.arpForceToScaleMask |= ARP_SCALE_ADJUST_MUTE; break;
+      case 13: _P.arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; _P.arpForceToScaleMask |= ARP_SCALE_ADJUST_FLAT; break;
+      case 14: _P.arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; _P.arpForceToScaleMask |= ARP_SCALE_ADJUST_SHARP; break;
+      case 15: _P.arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; _P.arpForceToScaleMask |= ARP_SCALE_ADJUST_TOGGLE; break;
     }
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
@@ -3244,7 +3268,7 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
     uiSetLeds(11, 5, uiLedDim);
     uiLeds[0] = uiLedMedium;
     uiLeds[14] = uiLedMedium;
-    switch(arpForceToScaleMask & ARP_SCALE_CHROMATIC)
+    switch(_P.arpForceToScaleMask & ARP_SCALE_CHROMATIC)
     {
       case ARP_SCALE_CHROMATIC:  uiLeds[0] = uiLedBright; break;
       case ARP_SCALE_IONIAN:     uiLeds[1] = uiLedBright; break;
@@ -3255,7 +3279,7 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
       case ARP_SCALE_AEOLIAN:    uiLeds[6] = uiLedBright; break;
       case ARP_SCALE_LOCRIAN:    uiLeds[7] = uiLedBright; break;
     }    
-    switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+    switch(_P.arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
     {
       case ARP_SCALE_ADJUST_SKIP: uiLeds[11] = uiLedBright; break;
       case ARP_SCALE_ADJUST_MUTE: uiLeds[12] = uiLedBright; break;
@@ -3274,7 +3298,7 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   // DDDOXXXXXXXXXXXX        
   if(keyPress >= 0 && keyPress < 12)
   {
-    arpForceToScaleRoot = keyPress;
+    _P.arpForceToScaleRoot = keyPress;
     arpFlags |= ARP_FLAG_REBUILD;
     forceRefresh = 1;
   }
@@ -3288,7 +3312,7 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
     uiLeds[6] = uiLedDim;
     uiLeds[8] = uiLedDim;
     uiLeds[10] = uiLedDim;
-    uiLeds[arpForceToScaleRoot] = uiLedBright;
+    uiLeds[_P.arpForceToScaleRoot] = uiLedBright;
   }
 }
 
@@ -3527,7 +3551,7 @@ public:
       int v;
       switch(controller) {
         case TRANSPOSE:          
-          arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
+          _P.arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
           arpFlags |= ARP_FLAG_REBUILD;
           editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
@@ -3539,18 +3563,18 @@ public:
           break;
         case VELOCITY:
           v = endStops(value);
-          arpVelocity = v/8;
-          arpVelocityMode = 1;
+          _P.arpVelocity = v/8;
+          _P.arpVelocityMode = 1;
           editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case GATELEN:
           v = endStops(value);
           if(1023 == v)
-            arpGateLength = 0;
+            _P.arpGateLength = 0;
           else if(v < 10)
-            arpGateLength = 1;
+            _P.arpGateLength = 1;
           else
-            arpGateLength = 10 + (v*150.0)/1023.0;
+            _P.arpGateLength = 10 + (v*150.0)/1023.0;
           editFlags |= EDIT_FLAG_FORCE_REFRESH;
           break;
         case PITCHBEND:
