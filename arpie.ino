@@ -51,7 +51,9 @@
 #define SYNCH_CLOCK_MIN_PERIOD     20
 #define SYNCH_CLOCK_INVERT         0
 
-#define DAC_ADDR 0b1100000
+#define DAC_ADDR    0b1100000
+#define EEPROM_ADDR 0b1010000
+
 //
 // PREFERENCES WORD
 //
@@ -132,7 +134,7 @@ extern volatile unsigned int synchFlags;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-#define ARP_PATTERN_VERSION   0xA0   // identifies pattern version in EEPROM
+#define ARP_PATCH_VERSION   0xA0   // identifies patch version in EEPROM
 
 // sizes of arrays
 #define ARP_MAX_CHORD     12      // max notes in a chord
@@ -296,6 +298,7 @@ byte uiLedDim;
 #define UI_HOLD_HELD     0x02
 #define UI_HOLD_CHORD    0x04
 #define UI_HOLD_LOCKED   0x08
+#define UI_HOLD_AS_SHIFT 0x10
 
 #define SYNCH_SOURCE_NONE      0
 #define SYNCH_SOURCE_INTERNAL  1
@@ -613,7 +616,7 @@ void uiRun(unsigned long milliseconds)
         uiHoldType |= UI_HOLD_PRESSED;
         uiHoldPressedTime = milliseconds;
       }
-      else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + uiLongHoldTime))
+      else if(!(uiHoldType & UI_HOLD_HELD) && !(uiHoldType & UI_HOLD_AS_SHIFT) && (milliseconds > uiHoldPressedTime + uiLongHoldTime))
       {
         // record a long hold and set LOCK flag
         uiHoldType |= UI_HOLD_HELD;          
@@ -624,7 +627,7 @@ void uiRun(unsigned long milliseconds)
     else
       if(!!(uiHoldType & UI_HOLD_PRESSED))
       {
-        if(!(uiHoldType & UI_HOLD_HELD))
+        if(!(uiHoldType & UI_HOLD_HELD) && !(uiHoldType & UI_HOLD_AS_SHIFT))
         {
           // release after short hold clears lock flag
           // and toggles hold
@@ -635,6 +638,7 @@ void uiRun(unsigned long milliseconds)
         }
         uiHoldType &= ~UI_HOLD_PRESSED;
         uiHoldType &= ~UI_HOLD_HELD;
+        uiHoldType &= ~UI_HOLD_AS_SHIFT;
         uiHoldPressedTime = milliseconds;
       }    
 
@@ -644,6 +648,9 @@ void uiRun(unsigned long milliseconds)
     digitalWrite(P_UI_HOLD_LED, !!(uiHoldType & UI_HOLD_CHORD));   
 }
 
+void uiCancelHoldAction() {
+  
+}
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -760,7 +767,10 @@ void midiInit()
 {
   // init the serial port
   Serial.begin(31250);
+//  Serial.begin(9600);
   Serial.flush();
+//  Serial.print(sizeof(_P));
+//  for(;;);
 
   midiInRunningStatus = 0;
   midiOutRunningStatus = 0;
@@ -2389,7 +2399,12 @@ enum {
   EDIT_MODE_INSERT           = UI_KEY_C3,
   EDIT_MODE_TEMPO_SYNCH      = UI_KEY_A4,
   EDIT_MODE_CHANNEL          = UI_KEY_B4,
-  EDIT_MODE_TRANSPOSE        = UI_KEY_C4
+  EDIT_MODE_TRANSPOSE        = UI_KEY_C4,
+
+  // shifted "virtual" menu buttons
+  EDIT_MODE_LOAD_PATCH       = 0x40,
+  EDIT_MODE_SAVE_PATCH,
+  EDIT_MODE_CLEAR_PATCH
 };
 
 // Time in ms when we go back to pattern
@@ -3316,8 +3331,58 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   }
 }
 
+
+void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
+{  
+  if(keyPress >= 0 && keyPress < 16)
+  {
+    
+      Wire.beginTransmission(EEPROM_ADDR);
+      Wire.write(keyPress<<1);
+      Wire.write(0);
+      Wire.write(ARP_PATCH_VERSION);
+      Wire.endTransmission();      
+
+      for(;;) {
+        Wire.beginTransmission(EEPROM_ADDR);
+        Wire.write(0);
+        Wire.write(0);
+        if(2 != Wire.endTransmission()) {
+          break;
+        }
+      }      
+      forceRefresh = 1;
+  }
+  
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiSetLeds(0, 16, uiLedMedium);
+    for(int i=0; i<16; ++i) {
+      Wire.beginTransmission(EEPROM_ADDR);
+      Wire.write(i<<1);
+      Wire.write(0);
+      Wire.endTransmission();
+      Wire.requestFrom(EEPROM_ADDR, 1);
+      while(!Wire.available());
+      if(Wire.read() == ARP_PATCH_VERSION) {
+        uiLeds[i] = uiLedBright;    
+      }
+    }
+  }
+}
+
+
 /////////////////////////////////////////////////////
 // EDIT RUN
+//
+/*
+       if(uiHoldType == UI_HOLD_HELD) {
+      //if(menuKeyPress == EDIT_MODE_PATTERN && uiHoldType == UI_HOLD_HELD) {
+        editMode = EDIT_MODE_LOAD;
+      }            
+
+ */
 void editRun(unsigned long milliseconds)
 {
   byte forceRefresh = (editFlags & EDIT_FLAG_FORCE_REFRESH);
@@ -3333,7 +3398,7 @@ void editRun(unsigned long milliseconds)
     editRevertTime = milliseconds + EDIT_REVERT_TIME;
   }
 
-  // Capture any key pressed on the data entry keypad  
+  // Capture any key pressed on the menu keypad  
   char menuKeyPress = uiMenuKey;
   if(NO_VALUE == menuKeyPress)
   {
@@ -3345,7 +3410,33 @@ void editRun(unsigned long milliseconds)
   else
   {
     uiMenuKey = NO_VALUE;
-    if(menuKeyPress != editMode || EDIT_LONG_RELEASED == editPressType)
+
+
+    // check if HOLD is pressed
+    if(uiHoldType & UI_HOLD_PRESSED) 
+    {
+      // the hold button was pressed at the same time that a menu button was 
+      // pressed, so the normal hold button action is cancelled and the hold
+      // button can access shifted menu functions...      
+      uiHoldType |= UI_HOLD_AS_SHIFT;      
+      switch(menuKeyPress) {
+        case EDIT_MODE_PATTERN:
+          menuKeyPress = EDIT_MODE_LOAD_PATCH;
+          break;
+        case EDIT_MODE_PATTERN_LENGTH:
+          menuKeyPress = EDIT_MODE_SAVE_PATCH;
+          break;
+        case EDIT_MODE_ARP_TYPE:
+          menuKeyPress = EDIT_MODE_CLEAR_PATCH;
+          break;
+        default:
+          menuKeyPress = 0;
+          break;
+      }
+    }   
+     
+    if(menuKeyPress && (menuKeyPress != editMode) || 
+      (EDIT_LONG_RELEASED == editPressType))
     {
       // change to a new edit mode, so 
       // screen needs to be refreshed
@@ -3353,6 +3444,9 @@ void editRun(unsigned long milliseconds)
       editPressType = EDIT_PRESS;
       editLongHoldTime = 0;
       forceRefresh = 1;
+
+
+
     }
     editRevertTime = milliseconds + EDIT_REVERT_TIME;
   }
@@ -3409,7 +3503,7 @@ void editRun(unsigned long milliseconds)
   case EDIT_MODE_PATTERN:
     if(editPressType >= EDIT_LONG_HOLD)
       editPatternExt(dataKeyPress, forceRefresh);
-    else
+    else 
       editPattern(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_PATTERN_LENGTH:
@@ -3475,6 +3569,11 @@ void editRun(unsigned long milliseconds)
   case EDIT_MODE_TRANSPOSE:
     editTranspose(dataKeyPress, forceRefresh);
     break;        
+  case EDIT_MODE_LOAD_PATCH:
+  case EDIT_MODE_SAVE_PATCH:
+  case EDIT_MODE_CLEAR_PATCH:
+    editPatchAction(editMode, dataKeyPress, forceRefresh);
+    break;
   default:
     editPattern(dataKeyPress, forceRefresh);
     break;   
