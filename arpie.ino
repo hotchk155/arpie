@@ -76,6 +76,8 @@ enum {
   PREF_HHPOT_PC5_MOD=    (unsigned int)0b0000000100000000,
   PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0000001000000000,
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
+
+  PREF_HH_16THCLOCK=     (unsigned int)0b1000000000000000,
  
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
 
@@ -93,16 +95,23 @@ enum {
   
   PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
-#define IS_HH_SYNCTAB (((gPreferences>>8)&0xFD) == 0x80) 
-#define IS_HH_CVTAB   (((gPreferences>>8)&0xFD) == 0x81)
-#define IS_HH_POTS    (((gPreferences>>8)&0x80) == 0x00)
-#define IS_HH_CLOCKOUT   (((gPreferences>>8)&0xFC) == 0x80) // can be either the synctab or the cvtab
-#define IS_HH_16THCLOCK   (((gPreferences>>8)&0xFE) == 0x82) // can be either the synctab or the cvtab
+
+// HACK HEADER MODES
+enum {
+  HH_MODE_NONE,
+  HH_MODE_CTRLTAB,
+  HH_MODE_SYNCTAB,
+  HH_MODE_CVTAB,
+  HH_MODE_MEMOTAB
+};
 
 #define P_HH_CVTAB_GATE 14
 
 // The preferences word
 unsigned int gPreferences;
+
+// Hack header mode
+byte gHackHeaderMode;
 
 // Forward declare the UI refresh flag
 #define EDIT_FLAG_FORCE_REFRESH 0x01
@@ -679,9 +688,10 @@ enum {
   EEPROM_PREFS1,
   EEPROM_ARPOPTIONS0,
   EEPROM_ARPOPTIONS1,
-  EEPROM_MIDI_OPTS2
+  EEPROM_MIDI_OPTS2,
+  EEPROM_HH_MODE
 };
-#define EEPROM_MAGIC_COOKIE_VALUE  0x23
+#define EEPROM_MAGIC_COOKIE_VALUE  0x24
 
 ////////////////////////////////////////////////////////////////////////////////
 // SET A VALUE IN EEPROM
@@ -1096,14 +1106,16 @@ void synchTick(byte source)
     }
     synchFlags &= ~SYNCH_RESTART_ON_BEAT;
     
-    if(!(synchTickCount % TICKS_PER_QUARTER_NOTE))
+    if(!(synchTickCount % TICKS_PER_QUARTER_NOTE)) {      
+      synchPulseClockTickCount = 0;
       synchFlags |= SYNCH_BEAT;
+    }    
   }
 
   if(synchFlags & SYNCH_SEND_CLOCK)
     synchTicksToSend++;
     
-  if(IS_HH_CLOCKOUT)
+  if(gHackHeaderMode == HH_MODE_SYNCTAB || gHackHeaderMode == HH_MODE_CVTAB)
     synchPulseClockTickCount++;
 }
 
@@ -1115,6 +1127,7 @@ void synchRestartSequence()
   synchTickCount = 0;
   synchPlayIndex = 0;
   synchTicksToSend = 0;
+  synchPulseClockTickCount = 0;
   synchFlags |= SYNCH_BEAT;
   synchFlags |= SYNCH_PLAY_ADVANCE;
 }
@@ -1263,16 +1276,10 @@ void synchInit()
   synchClockSendStateTimer = 0;
   synchLastPulseClockTime  = 0;
   synchThisPulseClockPeriod = 0;         
-  synchInternalTicksSinceLastPulseClock = 0;
-  
+  synchInternalTicksSinceLastPulseClock = 0;  
   synchClockOutPin = 0;
-  if(IS_HH_16THCLOCK) {
-    synchTickToPulseRatio = 6; // sixteenths
-  }
-  else {
-    synchTickToPulseRatio = 12; // eigths    
-  }
-  if(IS_HH_SYNCTAB) {
+  synchTickToPulseRatio = (gPreferences & PREF_HH_16THCLOCK)? 6:12; // sixteenths or eigths    
+  if(gHackHeaderMode == HH_MODE_SYNCTAB) {
      pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
      pinMode(P_SYNCH_HH_CLKIN, INPUT);
      pinMode(P_SYNCH_HH_DETECT, INPUT_PULLUP);
@@ -1290,7 +1297,7 @@ void synchInit()
      } 
     synchClockOutPin = P_SYNCH_HH_CLKOUT;
   }
-  else if(IS_HH_CVTAB) {
+  else if(gHackHeaderMode == HH_MODE_CVTAB) {
      pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
     synchClockOutPin = P_CVTAB_HH_CLKOUT;
   }
@@ -1386,9 +1393,10 @@ void synchRun(unsigned long milliseconds)
       // check if a new pulse is required
       if(synchPulseClockTickCount>=synchTickToPulseRatio)
       {
-         SYNCH_HH_CLOCK_ON;
+        SYNCH_HH_CLOCK_ON;
         synchPulseClockTickCount -= synchTickToPulseRatio;
         synchClockSendState = 1;
+        synchTickToPulseRatio = (gPreferences & PREF_HH_16THCLOCK)? 6:12; // sixteenths or eigths            
       }
     }
     else if(synchClockSendStateTimer != (byte)milliseconds)
@@ -1609,7 +1617,7 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
       arpLastVelocityCC = velocity;
     }  
     midiWrite(MIDI_MK_NOTE_ON, note, velocity, 2, milliseconds);          
-    if(IS_HH_CVTAB) {
+    if(gHackHeaderMode == HH_MODE_CVTAB) {
       int cv = ((note * 500)/12);
       while(cv<0) cv+=500;
       while(cv>4095) cv-=500;
@@ -1656,7 +1664,7 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
       }
     }
   }
-  if(gateOff && IS_HH_CVTAB) {
+  if(gateOff && (gHackHeaderMode == HH_MODE_CVTAB)) {
     digitalWrite(P_HH_CVTAB_GATE,LOW);        
   }
 }
@@ -2437,6 +2445,7 @@ unsigned long editLongHoldTime;
 byte editPressType;
 byte editFlags;
 unsigned long editTapTempoTime;
+byte editBlinkState;
 
 ////////////////////////////////////////////////////////////////////////////////
 // INIT EDITING
@@ -2448,6 +2457,7 @@ void editInit()
   editRevertTime = 0;
   editLongHoldTime = 0;
   editTapTempoTime = 0;
+  editBlinkState = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3414,7 +3424,7 @@ byte patchQuery(byte which) {
   byte ver=0;
   return hhReadMemory(PATCH_ADDR(which), &ver, 1) && (ver==ARP_PATCH_VERSION);
 }
-void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
+void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRefresh)
 {  
   byte ver;
   if(keyPress >= 0 && keyPress < 16)
@@ -3445,11 +3455,17 @@ void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
       break;      
     }
   }
-  
-  if(forceRefresh)
+
+  if(forceRefresh||(blinkState&1))
   {
     for(int i=0; i<16; ++i) {
-      uiLeds[i] = patchQuery(i)? uiLedBright : uiLedMedium;    
+      uiLeds[i] = patchQuery(i)? uiLedMedium : uiLedDim;    
+    }
+  }
+  else if(blinkState&1) {
+    byte phase = !!(blinkState & 0xF0);
+    for(int i=0; i<16; ++i) { 
+      uiLeds[i] = (uiLeds[i] == uiLedDim)? uiLedDim : phase? uiLedBright : uiLedMedium;
     }
   }
 }
@@ -3458,17 +3474,19 @@ void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
 /////////////////////////////////////////////////////
 // EDIT RUN
 //
-/*
-       if(uiHoldType == UI_HOLD_HELD) {
-      //if(menuKeyPress == EDIT_MODE_PATTERN && uiHoldType == UI_HOLD_HELD) {
-        editMode = EDIT_MODE_LOAD;
-      }            
-
- */
 void editRun(unsigned long milliseconds)
 {
   byte forceRefresh = (editFlags & EDIT_FLAG_FORCE_REFRESH);
   editFlags &= ~EDIT_FLAG_FORCE_REFRESH;
+
+  // blink state allows menu handlers to blink LEDs. 
+  // bits 7-4 come from ms counter and bit 1 is set
+  // each time 32ms has passed
+  byte blinkState = (milliseconds&0xF0);
+  if((blinkState ^ editBlinkState)&0xF0) {
+    editBlinkState = milliseconds;
+    blinkState |= 1;
+  }
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
@@ -3492,28 +3510,29 @@ void editRun(unsigned long milliseconds)
   else
   {
     uiMenuKey = NO_VALUE;
-
-
+    
     // check if HOLD is pressed
     if(uiHoldType & UI_HOLD_PRESSED) 
     {
-      // the hold button was pressed at the same time that a menu button was 
-      // pressed, so the normal hold button action is cancelled and the hold
-      // button can access shifted menu functions...      
-      uiHoldType |= UI_HOLD_AS_SHIFT;      
-      switch(menuKeyPress) {
-        case EDIT_MODE_PATTERN:
-          menuKeyPress = EDIT_MODE_LOAD_PATCH;
-          break;
-        case EDIT_MODE_PATTERN_LENGTH:
-          menuKeyPress = EDIT_MODE_SAVE_PATCH;
-          break;
-        case EDIT_MODE_ARP_TYPE:
-          menuKeyPress = EDIT_MODE_CLEAR_PATCH;
-          break;
-        default:
-          menuKeyPress = 0;
-          break;
+      if(gHackHeaderMode == HH_MODE_CVTAB || gHackHeaderMode == HH_MODE_MEMOTAB) {
+        // the hold button was pressed at the same time that a menu button was 
+        // pressed, so the normal hold button action is cancelled and the hold
+        // button can access shifted menu functions...      
+        uiHoldType |= UI_HOLD_AS_SHIFT;      
+        switch(menuKeyPress) {
+          case EDIT_MODE_PATTERN:
+            menuKeyPress = EDIT_MODE_LOAD_PATCH;
+            break;
+          case EDIT_MODE_PATTERN_LENGTH:
+            menuKeyPress = EDIT_MODE_SAVE_PATCH;
+            break;
+          case EDIT_MODE_ARP_TYPE:
+            menuKeyPress = EDIT_MODE_CLEAR_PATCH;
+            break;
+          default:
+            menuKeyPress = 0;
+            break;
+        }
       }
     }   
      
@@ -3651,7 +3670,7 @@ void editRun(unsigned long milliseconds)
   case EDIT_MODE_LOAD_PATCH:
   case EDIT_MODE_SAVE_PATCH:
   case EDIT_MODE_CLEAR_PATCH:
-    editPatchAction(editMode, dataKeyPress, forceRefresh);
+    editPatchAction(editMode, dataKeyPress, blinkState, forceRefresh);
     break;
   default:
     editPattern(dataKeyPress, forceRefresh);
@@ -3785,7 +3804,7 @@ byte hhTime;   // stores divided ms just so we can check for ticks
 // Initialise hack header manager
 void hhInit() 
 {
-  if(IS_HH_POTS) {
+  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
     pinMode(P_HH_SW_PB3,INPUT_PULLUP);
     pinMode(P_HH_POT_PC5,INPUT);
     pinMode(P_HH_POT_PC4,INPUT);
@@ -3796,7 +3815,7 @@ void hhInit()
   Pot3.reset();
   hhTime = 0;
 
-  if(IS_HH_CVTAB) {
+  if(gHackHeaderMode == HH_MODE_CVTAB) {
     Wire.begin();
     Wire.beginTransmission(DAC_ADDR); 
     Wire.write(0b10011001); // buffered Vref, powered up, 2x
@@ -3817,8 +3836,7 @@ void hhRun(unsigned long milliseconds)
   arpFlags &= ~ARP_FLAG_MUTE;
   synchFlags &= ~SYNCH_HOLD_AT_ZERO;
 
-  if(IS_HH_POTS)
-  {
+  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
       switch(gPreferences & PREF_HHPOT_PC5)
       {
       case PREF_HHPOT_PC5_MOD:
@@ -3912,6 +3930,9 @@ void heartbeatRun(unsigned long milliseconds)
 ////////////////////////////////////////////////////////////////////////////////
 void setup() {                
 
+  // load hack header mode
+  gHackHeaderMode = eepromGet(EEPROM_HH_MODE);   
+
   // Load user preferences  
   prefsInit();
   
@@ -3956,6 +3977,7 @@ void setup() {
     eepromSet(EEPROM_MIDI_OPTS2, MIDI_OPTS2_DEFAULT_VALUE);
     eepromSet(EEPROM_SYNCH_SOURCE,0);
     eepromSet(EEPROM_SYNCH_SEND,0);  
+    eepromSet(EEPROM_HH_MODE, 0); 
     prefsSave();
     prefsApply();
     arpOptionsSave();
@@ -3966,11 +3988,29 @@ void setup() {
     delay(1000);
     editFlags |= EDIT_FLAG_FORCE_REFRESH;
   }  
+  // pressing a data key when version is displayed allows hack header
+  // mode to be changed
+  else if(uiDataKey >= HH_MODE_NONE && uiDataKey <= HH_MODE_MEMOTAB) {
+    gHackHeaderMode = uiDataKey;
+    gPreferences &= ~PREF_HACKHEADER;
+    eepromSet(EEPROM_HH_MODE, gHackHeaderMode); 
+    uiSetLeds(0, 16, 0);
+    uiSetLeds(0, 5, uiLedMedium);
+    for(int i=0; i<4; ++i) {
+      uiSetLeds(gHackHeaderMode, 1, uiLedBright);
+      delay(200);
+      uiSetLeds(gHackHeaderMode, 1, uiLedMedium);
+      delay(200);
+    }
+
+    // reboot after changing the hack header mode
+    void(*reboot)() = 0;      
+    reboot();
+  }
   
   if(midiOptions & MIDI_OPTS_LOCAL_OFF) {
     midiLocalOff(true);
   }
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
