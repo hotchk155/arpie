@@ -220,6 +220,7 @@ typedef struct {
   byte arpPatternLength;                // user-defined pattern length (1-16)
   char arpTransposeSequence[ARP_MAX_TRAN_SEQ];
   byte arpTransposeSequenceLen;  
+  unsigned int arpManualChord; // Manual chord selected by the user
 } ARP_PATCH;
 
 // the active patch
@@ -648,9 +649,13 @@ void uiRun(unsigned long milliseconds)
     digitalWrite(P_UI_HOLD_LED, !!(uiHoldType & UI_HOLD_CHORD));   
 }
 
-void uiCancelHoldAction() {
-  
+void uiSetHold() {
+  uiHoldType |= UI_HOLD_CHORD;
+  uiHoldType &= ~UI_HOLD_PRESSED;
+  uiHoldType &= ~UI_HOLD_HELD;
+  uiHoldType &= ~UI_HOLD_AS_SHIFT;
 }
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -769,8 +774,6 @@ void midiInit()
   Serial.begin(31250);
 //  Serial.begin(9600);
   Serial.flush();
-//  Serial.print(sizeof(_P));
-//  for(;;);
 
   midiInRunningStatus = 0;
   midiOutRunningStatus = 0;
@@ -1465,8 +1468,6 @@ char arpChordRootNote;                // root note of the chord
 int arpNotesHeld;          // number of notes physically held
 
 
-// Manual chord selected by the user
-unsigned int arpManualChord;
 
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
 unsigned int arpSequence[ARP_MAX_SEQUENCE];
@@ -1486,7 +1487,6 @@ unsigned long arpStopNoteTime;
 // used to time the length of a step
 unsigned long arpLastPlayAdvance;
 
-//#define ARP_MAX_TRAN_SEQ 16
 byte arpTransposeSequencePos;
 unsigned int arpTransposeSequenceMask;
 
@@ -1545,12 +1545,27 @@ void arpOptionsSave()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// ARP RESET
+void arpReset() {
+  arpSequenceLength = 0;
+  arpLastPlayAdvance = 0;
+  arpChordRootNote = -1;
+  arpSequenceIndex = 0;
+  arpTransposeSequencePos = 0;
+  arpTransposeSequenceMask = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // ARP INIT
 void arpInit()
 {
   int i;
+
+  arpNotesHeld = 0;
+  arpRefresh = 0;
+  arpFlags = 0;
+  arpLastVelocityCC = 0xFF;
   
-  //  arpHold = 0;
   _P.arpType = ARP_TYPE_UP;
   _P.arpOctaveShift = 0;
   _P.arpOctaveSpan = 1;
@@ -1559,26 +1574,16 @@ void arpInit()
   _P.arpAccentVelocity = 127;
   _P.arpVelocityMode = 1;
   _P.arpChordLength = 0;
-  arpNotesHeld = 0;
   _P.arpPatternLength = 16;
-  arpRefresh = 0;
-  arpFlags = 0;
   _P.arpGateLength = 100;
-  arpSequenceLength = 0;
-  arpLastPlayAdvance = 0;
   _P.arpTranspose = 0;
   _P.arpForceToScaleRoot=0;
   _P.arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
-  arpChordRootNote = -1;
-  arpSequenceIndex = 0;
-  arpManualChord = 0;
+  _P.arpManualChord = 0;
   _P.arpTransposeSequenceLen = 0;
-  arpTransposeSequencePos = 0;
-  arpTransposeSequenceMask = 0;
   arpOptionsLoad();
   arpOptions &= ~ARP_LAYER_MASK;
   arpOptions |= ARP_LAYER_ACCENT;
-  arpLastVelocityCC = 0xFF;
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
@@ -1587,6 +1592,8 @@ void arpInit()
   // no notes playing
   for(i=0;i<16;++i)
     arpPlayingNotes[i] = 0;    
+
+  arpReset();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1659,7 +1666,7 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
 void arpClear()
 {
   _P.arpChordLength = 0;
-  arpManualChord = 0;
+  _P.arpManualChord = 0;
   editFlags |= EDIT_FLAG_FORCE_REFRESH;
   arpFlags |= ARP_FLAG_REBUILD;
 }
@@ -2132,7 +2139,7 @@ void arpSetManualChord()
   arpNotesHeld = 0;  
   unsigned int m=1;
   for(int i=0; i<16; ++i) {
-     if((arpManualChord & m) && (_P.arpChordLength < ARP_MAX_CHORD-1))
+     if((_P.arpManualChord & m) && (_P.arpChordLength < ARP_MAX_CHORD-1))
      {        
        _P.arpChord[_P.arpChordLength] = ARP_MAKE_NOTE(48+i,127);
        _P.arpChordLength++;
@@ -2976,7 +2983,7 @@ void editInsertMode(char keyPress, byte forceRefresh)
   }
 
   if(newChord) {
-    arpManualChord = 0;
+    _P.arpManualChord = 0;
     arpFlags |= ARP_FLAG_REBUILD;
     uiHoldType |= UI_HOLD_CHORD;
   }
@@ -2995,7 +3002,7 @@ void editManualChord(char keyPress, byte forceRefresh)
 {
   
   if(keyPress >= 0 && keyPress < 16) {
-    arpManualChord ^= (1<<keyPress);
+    _P.arpManualChord ^= (1<<keyPress);
     arpSetManualChord();
     forceRefresh = 1;
     uiHoldType |= UI_HOLD_CHORD;
@@ -3007,10 +3014,10 @@ void editManualChord(char keyPress, byte forceRefresh)
     for(int i=0; i<16; ++i) {
       switch(i) {
         case 0: case 2: case 4: case 5: case 7: case 9: case 11: case 12: case 14:
-          uiLeds[i] = (arpManualChord & m) ? uiLedBright:uiLedMedium;
+          uiLeds[i] = (_P.arpManualChord & m) ? uiLedBright:uiLedMedium;
           break;
         default:
-          uiLeds[i] = (arpManualChord & m) ? uiLedBright:uiLedDim;
+          uiLeds[i] = (_P.arpManualChord & m) ? uiLedBright:uiLedDim;
           break;
       }
       m<<=1;
@@ -3331,18 +3338,66 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   }
 }
 
+/////////////////////////////////////////////////////
+byte hhReadMemory(int addr, byte *dest, int len) 
+{
 
-void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
-{  
-  if(keyPress >= 0 && keyPress < 16)
-  {
-    
+  // set the start address
+  Wire.beginTransmission(EEPROM_ADDR);
+  Wire.write(addr>>8);
+  Wire.write(addr&0xFF);
+  Wire.endTransmission();
+  
+  // Arduino Wire library can read a maximum
+  // of 32 bytes at a time, so we need to read
+  // multiple blocks  
+  while(len > 0) {  
+
+    // get next block or all remaining bytes if less
+    int blockSize = len;
+    if(blockSize>32) {
+      blockSize = 32;
+    }      
+    len-=blockSize;
+    if(Wire.requestFrom(EEPROM_ADDR, blockSize) != blockSize) {
+      return 0;
+    }
+
+    // copy to destination
+    while(blockSize-- > 0) {
+      *dest++ = Wire.read();
+    }  
+  }
+  return 1;
+}
+
+/////////////////////////////////////////////////////
+// Address must be on a 32-byte boundary, ie (addr & ~31) == 0
+byte hhWriteMemory(int addr, byte *src, int len) {    
+    // while there are more bytes to send
+    while(len > 0) {
+
+      // since the arduino Wire library has a 32 byte buffer size
+      // we will need 2 write cycles to fill a 32 byte page on the
+      // EEPROM (since 2 byte write address must also be sent)
+      // Therefore we'll send each 32 byte page as two 16 bit 
+      // writes
       Wire.beginTransmission(EEPROM_ADDR);
-      Wire.write(keyPress<<1);
-      Wire.write(0);
-      Wire.write(ARP_PATCH_VERSION);
-      Wire.endTransmission();      
+      Wire.write(addr>>8);
+      Wire.write(addr&0xFF);
 
+      int blockSize = len;
+      if(blockSize > 16) {
+        blockSize = 16;
+      }
+      addr+=blockSize;
+      len-=blockSize;
+      for(int i=0; i<blockSize; ++i) {
+        Wire.write(*src++);
+      }
+      Wire.endTransmission();      
+      
+      // wait for the write to complete
       for(;;) {
         Wire.beginTransmission(EEPROM_ADDR);
         Wire.write(0);
@@ -3351,23 +3406,50 @@ void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
           break;
         }
       }      
+    }      
+}
+
+#define PATCH_ADDR(i) (((int)(i))<<9)
+byte patchQuery(byte which) {
+  byte ver=0;
+  return hhReadMemory(PATCH_ADDR(which), &ver, 1) && (ver==ARP_PATCH_VERSION);
+}
+void editPatchAction(byte editMode, char keyPress, byte forceRefresh)
+{  
+  byte ver;
+  if(keyPress >= 0 && keyPress < 16)
+  {
+    byte ver;
+    switch(editMode) {
+    case EDIT_MODE_LOAD_PATCH:
+      if(patchQuery(keyPress)) {
+        hhReadMemory(PATCH_ADDR(keyPress), (byte*)&_P, sizeof _P);
+        arpReset();
+        uiSetHold();
+        editMode = EDIT_MODE_PATTERN;
+        editPressType = EDIT_NO_PRESS;
+        editFlags = EDIT_FLAG_FORCE_REFRESH;      
+        arpFlags |= ARP_FLAG_REBUILD;
+        synchFlags |= SYNCH_RESTART_ON_BEAT; 
+      }
+      break;      
+    case EDIT_MODE_SAVE_PATCH:
+      _P.ver = ARP_PATCH_VERSION;
+      hhWriteMemory(PATCH_ADDR(keyPress), (byte*)&_P, sizeof _P);
       forceRefresh = 1;
+      break;
+    case EDIT_MODE_CLEAR_PATCH:
+      ver=0;
+      hhWriteMemory(PATCH_ADDR(keyPress), &ver, 1);
+      forceRefresh = 1;
+      break;      
+    }
   }
   
   if(forceRefresh)
   {
-    uiClearLeds();
-    uiSetLeds(0, 16, uiLedMedium);
     for(int i=0; i<16; ++i) {
-      Wire.beginTransmission(EEPROM_ADDR);
-      Wire.write(i<<1);
-      Wire.write(0);
-      Wire.endTransmission();
-      Wire.requestFrom(EEPROM_ADDR, 1);
-      while(!Wire.available());
-      if(Wire.read() == ARP_PATCH_VERSION) {
-        uiLeds[i] = uiLedBright;    
-      }
+      uiLeds[i] = patchQuery(i)? uiLedBright : uiLedMedium;    
     }
   }
 }
@@ -3435,7 +3517,7 @@ void editRun(unsigned long milliseconds)
       }
     }   
      
-    if(menuKeyPress && (menuKeyPress != editMode) || 
+    if(((menuKeyPress != NO_VALUE) && (menuKeyPress != editMode)) || 
       (EDIT_LONG_RELEASED == editPressType))
     {
       // change to a new edit mode, so 
@@ -3444,9 +3526,6 @@ void editRun(unsigned long milliseconds)
       editPressType = EDIT_PRESS;
       editLongHoldTime = 0;
       forceRefresh = 1;
-
-
-
     }
     editRevertTime = milliseconds + EDIT_REVERT_TIME;
   }
@@ -3485,7 +3564,7 @@ void editRun(unsigned long milliseconds)
 
   // check if we timed out user input and should revert
   // to pattern edit mode  
-  if(editRevertTime > 0 && editRevertTime < milliseconds)
+  if(editRevertTime > 0 && editRevertTime <= milliseconds)
   {
     // revert back to pattern edit mode
     if(gPreferences & PREF_AUTOREVERT)
