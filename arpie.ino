@@ -112,6 +112,7 @@ unsigned int gPreferences;
 
 // Hack header mode
 byte gHackHeaderMode;
+void hhSetCV(int note);
 
 // Forward declare the UI refresh flag
 #define EDIT_FLAG_FORCE_REFRESH 0x01
@@ -1471,34 +1472,18 @@ void synchAuxRead()
 #define ARP_NOTE_HELD 0x8000
 #define ARP_PLAY_THRU 0x8000
 
-char arpChordRootNote;                // root note of the chord
-
-int arpNotesHeld;          // number of notes physically held
-
-
-
-// ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
-unsigned int arpSequence[ARP_MAX_SEQUENCE];
-int arpSequenceLength;     // number of notes in the sequence
-int arpSequenceIndex;
-
-// NOTE PATTERN - the rythmic pattern of played/muted notes
-byte arpPatternIndex;    // position in the pattern (for display)
-
-byte arpRefresh;  // whether the pattern index is changed
-
-// STOP NOTE - remembers which (single) note is playing
-// and when it should be stopped
-byte arpPlayingNotes[16];
-unsigned long arpStopNoteTime;
-
-// used to time the length of a step
-unsigned long arpLastPlayAdvance;
-
-byte arpTransposeSequencePos;
-unsigned int arpTransposeSequenceMask;
-
-byte arpLastVelocityCC;
+char arpChordRootNote;                      // root note of the chord
+int arpNotesHeld;                           // number of notes physically held
+unsigned int arpSequence[ARP_MAX_SEQUENCE]; // generated sequence of notes
+int arpSequenceLength;                      // number of notes in the sequence
+int arpSequenceIndex;                       // index of playing note in sequence
+byte arpPatternIndex;                       // position in the pattern (for display)
+byte arpRefresh;                            // whether the pattern index is changed
+byte arpPlayingNotes[16];                   // which notes are currently playing
+unsigned long arpStopNoteTime;              // when playing notes time out
+byte arpTransposeSequencePos;               // position in the transpose sequence
+unsigned int arpTransposeSequenceMask;      // used to indicate transpose status on the LEDs
+byte arpLastVelocityCC;                     // the last CC value sent out for velocity
 
 enum {
   ARP_FLAG_REBUILD = 0x01,
@@ -1506,7 +1491,7 @@ enum {
 };
 
 // ARP STATUS FLAGS
-byte arpFlags;          // whether the sequence needs to be rebuilt
+byte arpFlags;                              // status flags - see above
 unsigned int arpOptions;
 
 enum {
@@ -1556,7 +1541,6 @@ void arpOptionsSave()
 // ARP RESET
 void arpReset() {
   arpSequenceLength = 0;
-  arpLastPlayAdvance = 0;
   arpChordRootNote = -1;
   arpSequenceIndex = 0;
   arpTransposeSequencePos = 0;
@@ -1618,14 +1602,7 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
     }  
     midiWrite(MIDI_MK_NOTE_ON, note, velocity, 2, milliseconds);          
     if(gHackHeaderMode == HH_MODE_CVTAB) {
-      int cv = ((note * 500)/12);
-      while(cv<0) cv+=500;
-      while(cv>4095) cv-=500;
-      Wire.beginTransmission(DAC_ADDR); 
-      Wire.write((cv>>8)&0xF); 
-      Wire.write((byte)cv); 
-      Wire.endTransmission();       
-      digitalWrite(P_HH_CVTAB_GATE,HIGH);      
+      hhSetCV(note);
     }
     byte n = (1<<(note&0x07));
     arpPlayingNotes[note>>3] |= n;
@@ -2284,7 +2261,6 @@ void arpRun(unsigned long milliseconds)
         // note till play till the next one starts
         arpStopNoteTime = 0;               
       }
-      arpLastPlayAdvance = milliseconds;
     }
 
     // need to update the arp display
@@ -2379,6 +2355,302 @@ void prefsApply()
       uiLongHoldTime = UI_HOLD_TIME_3;
       break;
   }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//
+// HACK HEADER IO
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Class to manage pot inputs
+class CPot 
+{
+  int value;
+  enum { 
+    TOLERANCE = 4,
+    UNKNOWN = -1,
+  };
+public:  
+  enum {
+    MAX_CC = 127,
+    TRANSPOSE,
+    TEMPO,
+    VELOCITY,
+    PITCHBEND,
+    GATELEN
+  };    
+  CPot() {
+    reset();
+  }
+  void reset() {
+    value = UNKNOWN;
+  }    
+  int endStops(int v)
+  {
+      if(v < TOLERANCE) 
+        return 0;
+      else if(v > 1023 - TOLERANCE) 
+        return 1023;
+      return v;
+  }
+  int centreDetent(int v)
+  {
+    const int range = 480;
+    const int top_of_low_band = range;
+    const int bottom_of_hi_band = 1023 - range;
+    if(v < top_of_low_band)
+      v = 512.0 * ((float)v/range);
+    else if(v > bottom_of_hi_band) 
+      v = 512 + 512.0 * (v-bottom_of_hi_band)/(float)range;
+    else 
+      v = 512;
+     return constrain(v,0,1023);
+  }
+  void run(int pin, byte controller, unsigned long milliseconds) {
+    int reading = analogRead(pin);
+    if(value == UNKNOWN) {
+      value = reading;
+    }
+    else if(abs(reading - value) > TOLERANCE) 
+    {
+      value = reading;
+      int v;
+      switch(controller) {
+        case TRANSPOSE:          
+          _P.arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
+          arpFlags |= ARP_FLAG_REBUILD;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
+          break;
+        case TEMPO:
+          v = endStops(value);
+          v = 30 + 250.0 * (v/1023.0);
+          synchSetTempo(v);
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
+          break;
+        case VELOCITY:
+          v = endStops(value);
+          _P.arpVelocity = v/8;
+          _P.arpVelocityMode = 1;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
+          break;
+        case GATELEN:
+          v = endStops(value);
+          if(1023 == v)
+            _P.arpGateLength = 0;
+          else if(v < 10)
+            _P.arpGateLength = 1;
+          else
+            _P.arpGateLength = 10 + (v*150.0)/1023.0;
+          editFlags |= EDIT_FLAG_FORCE_REFRESH;
+          break;
+        case PITCHBEND:
+          v = 16 * centreDetent(value);
+          midiWrite(MIDI_MK_PITCHBEND, v&0x7F, (v>>7)&0x7F, 2, milliseconds);          
+          break;
+        default:
+          v = endStops(value);
+          if(controller > 0 && controller <= MAX_CC)
+              midiWrite(MIDI_MK_CTRL_CHANGE, controller, v>>3, 2, milliseconds);
+          break;            
+      }      
+    }
+  }   
+};
+
+// Define three pot instances
+CPot Pot1;
+CPot Pot2;
+CPot Pot3;
+
+byte hhTime;   // stores divided ms just so we can check for ticks
+
+#define P_HH_POT_PC0 14
+#define P_HH_POT_PC4 18
+#define P_HH_POT_PC5 19
+#define P_HH_SW_PB3  11
+
+////////////////////////////////////////////////////////////////////////////////
+// Initialise hack header manager
+void hhInit() 
+{
+  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
+    pinMode(P_HH_SW_PB3,INPUT_PULLUP);
+    pinMode(P_HH_POT_PC5,INPUT);
+    pinMode(P_HH_POT_PC4,INPUT);
+    pinMode(P_HH_POT_PC0,INPUT);
+  }
+  Pot1.reset();
+  Pot2.reset();
+  Pot3.reset();
+  hhTime = 0;
+
+  if(gHackHeaderMode == HH_MODE_CVTAB) {
+    Wire.begin();
+    Wire.beginTransmission(DAC_ADDR); 
+    Wire.write(0b10011001); // buffered Vref, powered up, 2x
+    Wire.endTransmission();       
+    pinMode(P_HH_CVTAB_GATE,OUTPUT);    
+    digitalWrite(P_HH_CVTAB_GATE,LOW);    
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Run hack header manager
+void hhRun(unsigned long milliseconds)
+{      
+  // enforce a minimum period of 16ms between I/O polls
+  if((byte)(milliseconds>>4) == hhTime)
+    return;
+  hhTime = (byte)(milliseconds>>4); 
+  arpFlags &= ~ARP_FLAG_MUTE;
+  synchFlags &= ~SYNCH_HOLD_AT_ZERO;
+
+  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
+      switch(gPreferences & PREF_HHPOT_PC5)
+      {
+      case PREF_HHPOT_PC5_MOD:
+         Pot1.run(5, 1, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_TRANS:
+         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_CC:
+         Pot1.run(5, HH_CC_PC5, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC4)
+      {
+      case PREF_HHPOT_PC4_VEL:
+         Pot2.run(4, CPot::VELOCITY, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_PB:
+         Pot2.run(4, CPot::PITCHBEND, milliseconds);
+         break;
+      case PREF_HHPOT_PC4_CC:
+         Pot2.run(4, HH_CC_PC4, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC0)
+      {
+      case PREF_HHPOT_PC0_TEMPO:
+         Pot3.run(0, CPot::TEMPO, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_GATE:
+         Pot3.run(0, CPot::GATELEN, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_CC:
+         Pot3.run(0, HH_CC_PC0, milliseconds);
+         break;
+      }
+
+      if(!!(gPreferences & PREF_HHSW_PB3)) {        
+         if(!digitalRead(P_HH_SW_PB3)) {
+           synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+         }           
+      }
+      else {
+         if(!digitalRead(P_HH_SW_PB3))
+           arpFlags |= ARP_FLAG_MUTE;
+      }
+  }    
+}
+
+/////////////////////////////////////////////////////
+byte hhReadMemory(int addr, byte *dest, int len) 
+{
+
+  // set the start address
+  Wire.beginTransmission(EEPROM_ADDR);
+  Wire.write(addr>>8);
+  Wire.write(addr&0xFF);
+  Wire.endTransmission();
+  
+  // Arduino Wire library can read a maximum
+  // of 32 bytes at a time, so we need to read
+  // multiple blocks  
+  while(len > 0) {  
+
+    // get next block or all remaining bytes if less
+    int blockSize = len;
+    if(blockSize>32) {
+      blockSize = 32;
+    }      
+    len-=blockSize;
+    if(Wire.requestFrom(EEPROM_ADDR, blockSize) != blockSize) {
+      return 0;
+    }
+
+    // copy to destination
+    while(blockSize-- > 0) {
+      *dest++ = Wire.read();
+    }  
+  }
+  return 1;
+}
+
+/////////////////////////////////////////////////////
+// Address must be on a 32-byte boundary, ie (addr & ~31) == 0
+byte hhWriteMemory(int addr, byte *src, int len) {    
+    // while there are more bytes to send
+    while(len > 0) {
+
+      // since the arduino Wire library has a 32 byte buffer size
+      // we will need 2 write cycles to fill a 32 byte page on the
+      // EEPROM (since 2 byte write address must also be sent)
+      // Therefore we'll send each 32 byte page as two 16 bit 
+      // writes
+      Wire.beginTransmission(EEPROM_ADDR);
+      Wire.write(addr>>8);
+      Wire.write(addr&0xFF);
+
+      int blockSize = len;
+      if(blockSize > 16) {
+        blockSize = 16;
+      }
+      addr+=blockSize;
+      len-=blockSize;
+      for(int i=0; i<blockSize; ++i) {
+        Wire.write(*src++);
+      }
+      Wire.endTransmission();      
+      
+      // wait for the write to complete
+      for(;;) {
+        Wire.beginTransmission(EEPROM_ADDR);
+        Wire.write(0);
+        Wire.write(0);
+        if(2 != Wire.endTransmission()) {
+          break;
+        }
+      }      
+    }      
+}
+
+#define PATCH_ADDR(i) (((int)(i))<<9)
+byte hhPatchQuery(byte which) {
+  byte ver=0;
+  return hhReadMemory(PATCH_ADDR(which), &ver, 1) && (ver==ARP_PATCH_VERSION);
+}
+
+void hhSetCV(int note) {
+      int cv = ((note * 500)/12);
+      while(cv<0) cv+=500;
+      while(cv>4095) cv-=500;
+      Wire.beginTransmission(DAC_ADDR); 
+      Wire.write((cv>>8)&0xF); 
+      Wire.write((byte)cv); 
+      Wire.endTransmission();       
+      digitalWrite(P_HH_CVTAB_GATE,HIGH);      
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2749,7 +3021,6 @@ void editRate(char keyPress, byte forceRefresh)
     }
   }
 }
-
 
 /////////////////////////////////////////////////////
 // EDIT VELOCITY
@@ -3349,81 +3620,7 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
 }
 
 /////////////////////////////////////////////////////
-byte hhReadMemory(int addr, byte *dest, int len) 
-{
-
-  // set the start address
-  Wire.beginTransmission(EEPROM_ADDR);
-  Wire.write(addr>>8);
-  Wire.write(addr&0xFF);
-  Wire.endTransmission();
-  
-  // Arduino Wire library can read a maximum
-  // of 32 bytes at a time, so we need to read
-  // multiple blocks  
-  while(len > 0) {  
-
-    // get next block or all remaining bytes if less
-    int blockSize = len;
-    if(blockSize>32) {
-      blockSize = 32;
-    }      
-    len-=blockSize;
-    if(Wire.requestFrom(EEPROM_ADDR, blockSize) != blockSize) {
-      return 0;
-    }
-
-    // copy to destination
-    while(blockSize-- > 0) {
-      *dest++ = Wire.read();
-    }  
-  }
-  return 1;
-}
-
-/////////////////////////////////////////////////////
-// Address must be on a 32-byte boundary, ie (addr & ~31) == 0
-byte hhWriteMemory(int addr, byte *src, int len) {    
-    // while there are more bytes to send
-    while(len > 0) {
-
-      // since the arduino Wire library has a 32 byte buffer size
-      // we will need 2 write cycles to fill a 32 byte page on the
-      // EEPROM (since 2 byte write address must also be sent)
-      // Therefore we'll send each 32 byte page as two 16 bit 
-      // writes
-      Wire.beginTransmission(EEPROM_ADDR);
-      Wire.write(addr>>8);
-      Wire.write(addr&0xFF);
-
-      int blockSize = len;
-      if(blockSize > 16) {
-        blockSize = 16;
-      }
-      addr+=blockSize;
-      len-=blockSize;
-      for(int i=0; i<blockSize; ++i) {
-        Wire.write(*src++);
-      }
-      Wire.endTransmission();      
-      
-      // wait for the write to complete
-      for(;;) {
-        Wire.beginTransmission(EEPROM_ADDR);
-        Wire.write(0);
-        Wire.write(0);
-        if(2 != Wire.endTransmission()) {
-          break;
-        }
-      }      
-    }      
-}
-
-#define PATCH_ADDR(i) (((int)(i))<<9)
-byte patchQuery(byte which) {
-  byte ver=0;
-  return hhReadMemory(PATCH_ADDR(which), &ver, 1) && (ver==ARP_PATCH_VERSION);
-}
+// LOAD/SAVE PATCHES
 void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRefresh)
 {  
   byte ver;
@@ -3432,7 +3629,7 @@ void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRe
     byte ver;
     switch(editMode) {
     case EDIT_MODE_LOAD_PATCH:
-      if(patchQuery(keyPress)) {
+      if(hhPatchQuery(keyPress)) {
         hhReadMemory(PATCH_ADDR(keyPress), (byte*)&_P, sizeof _P);
         arpReset();
         uiSetHold();
@@ -3456,10 +3653,10 @@ void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRe
     }
   }
 
-  if(forceRefresh||(blinkState&1))
+  if(forceRefresh)
   {
     for(int i=0; i<16; ++i) {
-      uiLeds[i] = patchQuery(i)? uiLedMedium : uiLedDim;    
+      uiLeds[i] = hhPatchQuery(i)? uiLedMedium : uiLedDim;    
     }
   }
   else if(blinkState&1) {
@@ -3470,10 +3667,8 @@ void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRe
   }
 }
 
-
 /////////////////////////////////////////////////////
 // EDIT RUN
-//
 void editRun(unsigned long milliseconds)
 {
   byte forceRefresh = (editFlags & EDIT_FLAG_FORCE_REFRESH);
@@ -3677,214 +3872,6 @@ void editRun(unsigned long milliseconds)
     break;   
   }    
 }    
-
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-//
-//
-//
-//
-// HACK HEADER IO
-//
-//
-//
-//
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// Class to manage pot inputs
-class CPot 
-{
-  int value;
-  enum { 
-    TOLERANCE = 4,
-    UNKNOWN = -1,
-  };
-public:  
-  enum {
-    MAX_CC = 127,
-    TRANSPOSE,
-    TEMPO,
-    VELOCITY,
-    PITCHBEND,
-    GATELEN
-  };    
-  CPot() {
-    reset();
-  }
-  void reset() {
-    value = UNKNOWN;
-  }    
-  int endStops(int v)
-  {
-      if(v < TOLERANCE) 
-        return 0;
-      else if(v > 1023 - TOLERANCE) 
-        return 1023;
-      return v;
-  }
-  int centreDetent(int v)
-  {
-    const int range = 480;
-    const int top_of_low_band = range;
-    const int bottom_of_hi_band = 1023 - range;
-    if(v < top_of_low_band)
-      v = 512.0 * ((float)v/range);
-    else if(v > bottom_of_hi_band) 
-      v = 512 + 512.0 * (v-bottom_of_hi_band)/(float)range;
-    else 
-      v = 512;
-     return constrain(v,0,1023);
-  }
-  void run(int pin, byte controller, unsigned long milliseconds) {
-    int reading = analogRead(pin);
-    if(value == UNKNOWN) {
-      value = reading;
-    }
-    else if(abs(reading - value) > TOLERANCE) 
-    {
-      value = reading;
-      int v;
-      switch(controller) {
-        case TRANSPOSE:          
-          _P.arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
-          arpFlags |= ARP_FLAG_REBUILD;
-          editFlags |= EDIT_FLAG_FORCE_REFRESH;
-          break;
-        case TEMPO:
-          v = endStops(value);
-          v = 30 + 250.0 * (v/1023.0);
-          synchSetTempo(v);
-          editFlags |= EDIT_FLAG_FORCE_REFRESH;
-          break;
-        case VELOCITY:
-          v = endStops(value);
-          _P.arpVelocity = v/8;
-          _P.arpVelocityMode = 1;
-          editFlags |= EDIT_FLAG_FORCE_REFRESH;
-          break;
-        case GATELEN:
-          v = endStops(value);
-          if(1023 == v)
-            _P.arpGateLength = 0;
-          else if(v < 10)
-            _P.arpGateLength = 1;
-          else
-            _P.arpGateLength = 10 + (v*150.0)/1023.0;
-          editFlags |= EDIT_FLAG_FORCE_REFRESH;
-          break;
-        case PITCHBEND:
-          v = 16 * centreDetent(value);
-          midiWrite(MIDI_MK_PITCHBEND, v&0x7F, (v>>7)&0x7F, 2, milliseconds);          
-          break;
-        default:
-          v = endStops(value);
-          if(controller > 0 && controller <= MAX_CC)
-              midiWrite(MIDI_MK_CTRL_CHANGE, controller, v>>3, 2, milliseconds);
-          break;            
-      }      
-    }
-  }   
-};
-
-// Define three pot instances
-CPot Pot1;
-CPot Pot2;
-CPot Pot3;
-
-byte hhTime;   // stores divided ms just so we can check for ticks
-
-#define P_HH_POT_PC0 14
-#define P_HH_POT_PC4 18
-#define P_HH_POT_PC5 19
-#define P_HH_SW_PB3  11
-
-////////////////////////////////////////////////////////////////////////////////
-// Initialise hack header manager
-void hhInit() 
-{
-  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
-    pinMode(P_HH_SW_PB3,INPUT_PULLUP);
-    pinMode(P_HH_POT_PC5,INPUT);
-    pinMode(P_HH_POT_PC4,INPUT);
-    pinMode(P_HH_POT_PC0,INPUT);
-  }
-  Pot1.reset();
-  Pot2.reset();
-  Pot3.reset();
-  hhTime = 0;
-
-  if(gHackHeaderMode == HH_MODE_CVTAB) {
-    Wire.begin();
-    Wire.beginTransmission(DAC_ADDR); 
-    Wire.write(0b10011001); // buffered Vref, powered up, 2x
-    Wire.endTransmission();       
-    pinMode(P_HH_CVTAB_GATE,OUTPUT);    
-    digitalWrite(P_HH_CVTAB_GATE,LOW);    
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Run hack header manager
-void hhRun(unsigned long milliseconds)
-{      
-  // enforce a minimum period of 16ms between I/O polls
-  if((byte)(milliseconds>>4) == hhTime)
-    return;
-  hhTime = (byte)(milliseconds>>4); 
-  arpFlags &= ~ARP_FLAG_MUTE;
-  synchFlags &= ~SYNCH_HOLD_AT_ZERO;
-
-  if(gHackHeaderMode == HH_MODE_CTRLTAB) {
-      switch(gPreferences & PREF_HHPOT_PC5)
-      {
-      case PREF_HHPOT_PC5_MOD:
-         Pot1.run(5, 1, milliseconds);
-         break;
-      case PREF_HHPOT_PC5_TRANS:
-         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
-         break;
-      case PREF_HHPOT_PC5_CC:
-         Pot1.run(5, HH_CC_PC5, milliseconds);
-         break;
-      }
-      switch(gPreferences & PREF_HHPOT_PC4)
-      {
-      case PREF_HHPOT_PC4_VEL:
-         Pot2.run(4, CPot::VELOCITY, milliseconds);
-         break;
-      case PREF_HHPOT_PC4_PB:
-         Pot2.run(4, CPot::PITCHBEND, milliseconds);
-         break;
-      case PREF_HHPOT_PC4_CC:
-         Pot2.run(4, HH_CC_PC4, milliseconds);
-         break;
-      }
-      switch(gPreferences & PREF_HHPOT_PC0)
-      {
-      case PREF_HHPOT_PC0_TEMPO:
-         Pot3.run(0, CPot::TEMPO, milliseconds);
-         break;
-      case PREF_HHPOT_PC0_GATE:
-         Pot3.run(0, CPot::GATELEN, milliseconds);
-         break;
-      case PREF_HHPOT_PC0_CC:
-         Pot3.run(0, HH_CC_PC0, milliseconds);
-         break;
-      }
-
-      if(!!(gPreferences & PREF_HHSW_PB3)) {        
-         if(!digitalRead(P_HH_SW_PB3)) {
-           synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
-         }           
-      }
-      else {
-         if(!digitalRead(P_HH_SW_PB3))
-           arpFlags |= ARP_FLAG_MUTE;
-      }
-  }    
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 //
