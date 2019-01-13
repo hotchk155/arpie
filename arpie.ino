@@ -76,6 +76,7 @@ enum {
   PREF_HHPOT_PC5_MOD=    (unsigned int)0b0000000100000000,
   PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0000001000000000,
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
+  
   PREF_HH_16THCLOCK=     (unsigned int)0b1000000000000000,
       
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
@@ -110,6 +111,7 @@ enum {
 #define HH_CVCAL_CC_OFS     71
 #define HH_CVCAL_CC_SET     72
 #define HH_CVCAL_CC_SAVE    73
+
 
 // The preferences word
 unsigned int gPreferences;
@@ -2654,13 +2656,29 @@ void hhSetCV(int note) {
       Wire.endTransmission();       
       digitalWrite(P_HH_CVTAB_GATE,HIGH);      
 }
+#define HH_CAL_ADDR     0x1FF7 // top 8 bytes of slot for patch 15
+#define HH_CAL_COOKIE   0x12
 void hhCVCalSave() {
-    uiSetLeds(0, 16, uiLedBright);
-    delay(1000);
-    editFlags |= EDIT_FLAG_FORCE_REFRESH;
+    byte data[3] = {
+      HH_CAL_COOKIE,
+      hhCVCalScale,
+      hhCVCalOfs
+    };
+    if(hhWriteMemory(HH_CAL_ADDR, data, sizeof(data))) {
+      uiSetLeds(0, 16, uiLedBright);
+      delay(1000);
+      editFlags |= EDIT_FLAG_FORCE_REFRESH;
+    }
 }
 
 void hhCVCalLoad() {
+    byte data[3] = {0};
+    if(hhReadMemory(HH_CAL_ADDR, data, sizeof(data))) {
+      if(data[0] == HH_CAL_COOKIE) {
+        hhCVCalScale = (char)data[1];
+        hhCVCalOfs = (char)data[2];
+      }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4040,6 +4058,7 @@ void setup() {
     uiSetLeds(15, 1, uiLedBright);
     delay(1000);
     hhCVCal = 1;  
+    uiDataKey = NO_VALUE;
   }
   
   if(midiOptions & MIDI_OPTS_LOCAL_OFF) {
