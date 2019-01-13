@@ -121,7 +121,10 @@ byte hhMode;
 byte hhCVCal;
 char hhCVCalScale;
 char hhCVCalOfs;
+
+
 void hhSetCV(int note);
+void hhSetGate(byte state);
 void hhCVCalSave();
 
 // Forward declare the UI refresh flag
@@ -1627,9 +1630,6 @@ void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *no
       arpLastVelocityCC = velocity;
     }  
     midiWrite(MIDI_MK_NOTE_ON, note, velocity, 2, milliseconds);          
-    if(hhMode == HH_MODE_CVTAB) {
-      hhSetCV(note);
-    }
     byte n = (1<<(note&0x07));
     arpPlayingNotes[note>>3] |= n;
     if(noteSet)
@@ -1666,9 +1666,6 @@ void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
         m<<=1;
       }
     }
-  }
-  if(gateOff && (hhMode == HH_MODE_CVTAB)) {
-    digitalWrite(P_HH_CVTAB_GATE,LOW);        
   }
 }
 
@@ -2206,7 +2203,6 @@ void arpRun(unsigned long milliseconds)
     if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
       byte glide = 0;
-      byte newNote = 0;
       if(_P.arpPattern[arpPatternIndex] & ARP_PATN_TIE)
         glide = 2;
       else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
@@ -2218,6 +2214,7 @@ void arpRun(unsigned long milliseconds)
       
       // Loop to action play-through flag
       byte playThru = (_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAYTHRU)? 2:0;      
+      byte note = 0;
       do {      
         if(playThru == 2) {
           playThru = 1;
@@ -2226,12 +2223,11 @@ void arpRun(unsigned long milliseconds)
           // check play thru flag
           playThru = !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
         }
-
         
         // Play the note if applicable
         if(_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
         {
-          byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
+          note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
           if((_P.arpPattern[arpPatternIndex] & ARP_PATN_OCTDN) && (note > 12))
             note-=12;
           else if((_P.arpPattern[arpPatternIndex] & ARP_PATN_OCTAVE) && (note <= 115))
@@ -2251,7 +2247,6 @@ void arpRun(unsigned long milliseconds)
           if(note > 0)
           {
             arpStartNote(note, velocity, milliseconds, noteSet);
-            newNote = 1;
           }
         }
         
@@ -2259,10 +2254,15 @@ void arpRun(unsigned long milliseconds)
         ++arpSequenceIndex;
       } while(playThru && arpSequenceIndex < arpSequenceLength);
 
-      // if the previous note is still playing when a new one is played
-      // then stop it (should be the case only for "tie" mode)
-      if(newNote)
-      {
+      if(note > 0)
+      { 
+        if(hhMode == HH_MODE_CVTAB) {
+          hhSetCV(note);       
+          hhSetGate(1);
+        }
+        
+        // if the previous note is still playing when a new one is played
+        // then stop it (should be the case only for "tie" mode)
         arpStopNotes(milliseconds, noteSet);
       }
 
@@ -2301,6 +2301,9 @@ void arpRun(unsigned long milliseconds)
     // stop the ringing notes
     arpStopNotes(milliseconds, NULL);
     arpStopNoteTime = 0;
+    if(hhMode == HH_MODE_CVTAB) {
+      hhSetGate(0);
+    }
   }
 }
 
@@ -2510,60 +2513,61 @@ byte hhTime;   // stores divided ms just so we can check for ticks
 // Run hack header manager
 void hhRun(unsigned long milliseconds)
 {      
-  // enforce a minimum period of 16ms between I/O polls
-  if((byte)(milliseconds>>4) == hhTime)
-    return;
-  hhTime = (byte)(milliseconds>>4); 
-  arpFlags &= ~ARP_FLAG_MUTE;
-  synchFlags &= ~SYNCH_HOLD_AT_ZERO;
-
   if(hhMode == HH_MODE_CTRLTAB) {
-      switch(gPreferences & PREF_HHPOT_PC5)
-      {
-      case PREF_HHPOT_PC5_MOD:
-         Pot1.run(5, 1, milliseconds);
-         break;
-      case PREF_HHPOT_PC5_TRANS:
-         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
-         break;
-      case PREF_HHPOT_PC5_CC:
-         Pot1.run(5, HH_CC_PC5, milliseconds);
-         break;
-      }
-      switch(gPreferences & PREF_HHPOT_PC4)
-      {
-      case PREF_HHPOT_PC4_VEL:
-         Pot2.run(4, CPot::VELOCITY, milliseconds);
-         break;
-      case PREF_HHPOT_PC4_PB:
-         Pot2.run(4, CPot::PITCHBEND, milliseconds);
-         break;
-      case PREF_HHPOT_PC4_CC:
-         Pot2.run(4, HH_CC_PC4, milliseconds);
-         break;
-      }
-      switch(gPreferences & PREF_HHPOT_PC0)
-      {
-      case PREF_HHPOT_PC0_TEMPO:
-         Pot3.run(0, CPot::TEMPO, milliseconds);
-         break;
-      case PREF_HHPOT_PC0_GATE:
-         Pot3.run(0, CPot::GATELEN, milliseconds);
-         break;
-      case PREF_HHPOT_PC0_CC:
-         Pot3.run(0, HH_CC_PC0, milliseconds);
-         break;
-      }
 
-      if(!!(gPreferences & PREF_HHSW_PB3)) {        
-         if(!digitalRead(P_HH_SW_PB3)) {
-           synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
-         }           
-      }
-      else {
-         if(!digitalRead(P_HH_SW_PB3))
-           arpFlags |= ARP_FLAG_MUTE;
-      }
+    // enforce a minimum period of 16ms between I/O polls
+    if((byte)(milliseconds>>4) == hhTime)
+      return;
+    hhTime = (byte)(milliseconds>>4); 
+    arpFlags &= ~ARP_FLAG_MUTE;
+    synchFlags &= ~SYNCH_HOLD_AT_ZERO;
+  
+    switch(gPreferences & PREF_HHPOT_PC5)
+    {
+    case PREF_HHPOT_PC5_MOD:
+       Pot1.run(5, 1, milliseconds);
+       break;
+    case PREF_HHPOT_PC5_TRANS:
+       Pot1.run(5, CPot::TRANSPOSE, milliseconds);
+       break;
+    case PREF_HHPOT_PC5_CC:
+       Pot1.run(5, HH_CC_PC5, milliseconds);
+       break;
+    }
+    switch(gPreferences & PREF_HHPOT_PC4)
+    {
+    case PREF_HHPOT_PC4_VEL:
+       Pot2.run(4, CPot::VELOCITY, milliseconds);
+       break;
+    case PREF_HHPOT_PC4_PB:
+       Pot2.run(4, CPot::PITCHBEND, milliseconds);
+       break;
+    case PREF_HHPOT_PC4_CC:
+       Pot2.run(4, HH_CC_PC4, milliseconds);
+       break;
+    }
+    switch(gPreferences & PREF_HHPOT_PC0)
+    {
+    case PREF_HHPOT_PC0_TEMPO:
+       Pot3.run(0, CPot::TEMPO, milliseconds);
+       break;
+    case PREF_HHPOT_PC0_GATE:
+       Pot3.run(0, CPot::GATELEN, milliseconds);
+       break;
+    case PREF_HHPOT_PC0_CC:
+       Pot3.run(0, HH_CC_PC0, milliseconds);
+       break;
+    }
+
+    if(!!(gPreferences & PREF_HHSW_PB3)) {        
+       if(!digitalRead(P_HH_SW_PB3)) {
+         synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+       }           
+    }
+    else {
+       if(!digitalRead(P_HH_SW_PB3))
+         arpFlags |= ARP_FLAG_MUTE;
+    }
   }    
 }
 
@@ -2644,18 +2648,24 @@ byte hhPatchQuery(byte which) {
   return hhReadMemory(PATCH_ADDR(which), &ver, 1) && (ver==ARP_PATCH_VERSION);
 }
 
+void hhSetDAC(int dac) {
+      Wire.beginTransmission(DAC_ADDR); 
+      Wire.write((dac>>8)&0xF); 
+      Wire.write((byte)dac); 
+      Wire.endTransmission();         
+}
 void hhSetCV(int note) {
       int cv = ((note * 500)/12);
       cv = (((long)cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
       while(cv<0) cv+=500;
       while(cv>4095) cv-=500;
-            
-      Wire.beginTransmission(DAC_ADDR); 
-      Wire.write((cv>>8)&0xF); 
-      Wire.write((byte)cv); 
-      Wire.endTransmission();       
-      digitalWrite(P_HH_CVTAB_GATE,HIGH);      
+      hhSetDAC(cv);
 }
+
+void hhSetGate(byte state) {
+  digitalWrite(P_HH_CVTAB_GATE,state);      
+}
+
 #define HH_CAL_ADDR     0x1FF7 // top 8 bytes of slot for patch 15
 #define HH_CAL_COOKIE   0x12
 void hhCVCalSave() {
