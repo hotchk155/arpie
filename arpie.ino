@@ -51,6 +51,7 @@
 #define SYNCH_CLOCK_MIN_PERIOD     20
 #define SYNCH_CLOCK_INVERT         0
 
+// I2C ADDRESSES FOR DAUGHTER BOARDS
 #define DAC_ADDR    0b1100000
 #define EEPROM_ADDR 0b1010000
 
@@ -77,7 +78,8 @@ enum {
   PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0000001000000000,
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
   
-  PREF_HH_16THCLOCK=     (unsigned int)0b1000000000000000,
+  PREF_HH_8THCLOCK=     (unsigned int)0b1000000000000000,
+  PREF_HH_CVCAL=        (unsigned int)0b0000000100000000,
       
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
   
@@ -118,12 +120,18 @@ unsigned int gPreferences;
 
 // Hack header mode
 byte hhMode;
-byte hhCVCal;
+
+// CV TAB calibration data
 char hhCVCalScale;
 char hhCVCalOfs;
 
+// CV TAB pitch glide info
+long hhDACCurrent;
+long hhDACTarget;
+long hhDACIncrement;
 
-void hhSetCV(int note);
+// Hack header function prototypes
+void hhSetCV(long note);
 void hhSetGate(byte state);
 void hhCVCalSave();
 
@@ -521,7 +529,7 @@ void uiInit()
 
 ////////////////////////////////////////////////////////////////////////////////
 // SHOW FIRMWARE VERSION (BCD)
-void uiShowVersion()
+byte uiShowVersion()
 {
   if(digitalRead(P_UI_HOLDSW) == LOW) {
     uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? uiLedBright:uiLedDim;
@@ -545,7 +553,9 @@ void uiShowVersion()
     uiLeds[15] = !!((VERSION_LO%10)&0x1) ? uiLedBright:uiLedDim;
 
     while(digitalRead(P_UI_HOLDSW) == LOW);
+    return 1;
   }
+  return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -921,7 +931,7 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
                 break;
               }
             }
-            if(hhCVCal) {
+            if(gPreferences & PREF_HH_CVCAL) {
                switch(midiParams[0]) {
                 case HH_CVCAL_CC_SCALE:
                   hhCVCalScale = (midiParams[1]&0x7F)-64;
@@ -933,7 +943,9 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
                   hhSetCV(midiParams[1]);
                   break;
                 case HH_CVCAL_CC_SAVE:
+                  gPreferences &= ~PREF_HH_CVCAL;
                   hhCVCalSave();
+                  prefsSave();
                   break;
                }
             }
@@ -1308,7 +1320,7 @@ void synchInit()
   synchThisPulseClockPeriod = 0;         
   synchInternalTicksSinceLastPulseClock = 0;  
   synchClockOutPin = 0;
-  synchTickToPulseRatio = (gPreferences & PREF_HH_16THCLOCK)? 6:12; // sixteenths or eigths    
+  synchTickToPulseRatio = (gPreferences & PREF_HH_8THCLOCK)? 12:6; // sixteenths or eigths    
   if(hhMode == HH_MODE_SYNCTAB) {
      pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
      pinMode(P_SYNCH_HH_CLKIN, INPUT);
@@ -1426,7 +1438,7 @@ void synchRun(unsigned long milliseconds)
         SYNCH_HH_CLOCK_ON;
         synchPulseClockTickCount -= synchTickToPulseRatio;
         synchClockSendState = 1;
-        synchTickToPulseRatio = (gPreferences & PREF_HH_16THCLOCK)? 6:12; // sixteenths or eigths            
+        synchTickToPulseRatio = (gPreferences & PREF_HH_8THCLOCK)? 12:6; // sixteenths or eigths            
       }
     }
     else if(synchClockSendStateTimer != (byte)milliseconds)
@@ -2257,7 +2269,7 @@ void arpRun(unsigned long milliseconds)
       if(note > 0)
       { 
         if(hhMode == HH_MODE_CVTAB) {
-          hhSetCV(note);       
+          hhSetCV(note);
           hhSetGate(1);
         }
         
@@ -2509,67 +2521,6 @@ byte hhTime;   // stores divided ms just so we can check for ticks
 #define P_HH_SW_PB3  11
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Run hack header manager
-void hhRun(unsigned long milliseconds)
-{      
-  if(hhMode == HH_MODE_CTRLTAB) {
-
-    // enforce a minimum period of 16ms between I/O polls
-    if((byte)(milliseconds>>4) == hhTime)
-      return;
-    hhTime = (byte)(milliseconds>>4); 
-    arpFlags &= ~ARP_FLAG_MUTE;
-    synchFlags &= ~SYNCH_HOLD_AT_ZERO;
-  
-    switch(gPreferences & PREF_HHPOT_PC5)
-    {
-    case PREF_HHPOT_PC5_MOD:
-       Pot1.run(5, 1, milliseconds);
-       break;
-    case PREF_HHPOT_PC5_TRANS:
-       Pot1.run(5, CPot::TRANSPOSE, milliseconds);
-       break;
-    case PREF_HHPOT_PC5_CC:
-       Pot1.run(5, HH_CC_PC5, milliseconds);
-       break;
-    }
-    switch(gPreferences & PREF_HHPOT_PC4)
-    {
-    case PREF_HHPOT_PC4_VEL:
-       Pot2.run(4, CPot::VELOCITY, milliseconds);
-       break;
-    case PREF_HHPOT_PC4_PB:
-       Pot2.run(4, CPot::PITCHBEND, milliseconds);
-       break;
-    case PREF_HHPOT_PC4_CC:
-       Pot2.run(4, HH_CC_PC4, milliseconds);
-       break;
-    }
-    switch(gPreferences & PREF_HHPOT_PC0)
-    {
-    case PREF_HHPOT_PC0_TEMPO:
-       Pot3.run(0, CPot::TEMPO, milliseconds);
-       break;
-    case PREF_HHPOT_PC0_GATE:
-       Pot3.run(0, CPot::GATELEN, milliseconds);
-       break;
-    case PREF_HHPOT_PC0_CC:
-       Pot3.run(0, HH_CC_PC0, milliseconds);
-       break;
-    }
-
-    if(!!(gPreferences & PREF_HHSW_PB3)) {        
-       if(!digitalRead(P_HH_SW_PB3)) {
-         synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
-       }           
-    }
-    else {
-       if(!digitalRead(P_HH_SW_PB3))
-         arpFlags |= ARP_FLAG_MUTE;
-    }
-  }    
-}
 
 /////////////////////////////////////////////////////
 byte hhReadMemory(int addr, byte *dest, int len) 
@@ -2654,15 +2605,30 @@ void hhSetDAC(int dac) {
       Wire.write((byte)dac); 
       Wire.endTransmission();         
 }
-void hhSetCV(int note) {
-      int cv = ((note * 500)/12);
-      cv = (((long)cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
+void hhSetCV(long note) {
+      long cv = (((note-12) * 500)/12);
+      cv = ((cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
       while(cv<0) cv+=500;
       while(cv>4095) cv-=500;
-      hhSetDAC(cv);
+
+      if(hhDACCurrent) {
+        hhDACTarget = (((long)cv)<<16);
+        hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
+        if(!hhDACIncrement) {
+          hhDACCurrent = 0;
+        }
+      }
+
+      if(!hhDACCurrent) {
+        hhSetDAC(cv);
+        hhDACCurrent = (cv<<16);
+      }
 }
 
 void hhSetGate(byte state) {
+  if(!state) {
+    hhDACCurrent = 0;
+  }
   digitalWrite(P_HH_CVTAB_GATE,state);      
 }
 
@@ -2706,9 +2672,12 @@ void hhInit()
   Pot3.reset();
   hhTime = 0;
 
-  hhCVCal = 0;
   hhCVCalScale = 0;
   hhCVCalOfs = 0;
+
+  hhDACCurrent = 0;
+  hhDACTarget = 0;
+  hhDACIncrement = 0;
 
   if(hhMode == HH_MODE_CVTAB) {
     Wire.begin();
@@ -2720,6 +2689,90 @@ void hhInit()
 
     hhCVCalLoad();
   }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Run hack header manager
+void hhRun(unsigned long milliseconds)
+{      
+  if(hhMode == HH_MODE_CVTAB) {
+    if((byte)milliseconds == hhTime)
+      return;
+    hhTime = (byte)(milliseconds);
+    if(hhDACCurrent) {
+      if(hhDACCurrent < hhDACTarget) {
+        hhDACCurrent += hhDACIncrement;
+        if(hhDACCurrent >= hhDACTarget) {
+          hhDACCurrent = hhDACTarget ;
+          hhDACIncrement = 0;
+        }
+      }
+      else if(hhDACCurrent > hhDACTarget) {
+        hhDACCurrent -= hhDACIncrement;
+        if(hhDACCurrent <= hhDACTarget) {
+          hhDACCurrent = hhDACTarget ;
+          hhDACIncrement = 0;
+        }
+      }
+      hhSetDAC(hhDACCurrent>>16);
+    }
+  }
+  else if(hhMode == HH_MODE_CTRLTAB) {
+
+    // enforce a minimum period of 16ms between I/O polls
+    if((byte)(milliseconds>>4) == hhTime)
+      return;
+    hhTime = (byte)(milliseconds>>4); 
+    arpFlags &= ~ARP_FLAG_MUTE;
+    synchFlags &= ~SYNCH_HOLD_AT_ZERO;
+  
+    switch(gPreferences & PREF_HHPOT_PC5)
+    {
+    case PREF_HHPOT_PC5_MOD:
+       Pot1.run(5, 1, milliseconds);
+       break;
+    case PREF_HHPOT_PC5_TRANS:
+       Pot1.run(5, CPot::TRANSPOSE, milliseconds);
+       break;
+    case PREF_HHPOT_PC5_CC:
+       Pot1.run(5, HH_CC_PC5, milliseconds);
+       break;
+    }
+    switch(gPreferences & PREF_HHPOT_PC4)
+    {
+    case PREF_HHPOT_PC4_VEL:
+       Pot2.run(4, CPot::VELOCITY, milliseconds);
+       break;
+    case PREF_HHPOT_PC4_PB:
+       Pot2.run(4, CPot::PITCHBEND, milliseconds);
+       break;
+    case PREF_HHPOT_PC4_CC:
+       Pot2.run(4, HH_CC_PC4, milliseconds);
+       break;
+    }
+    switch(gPreferences & PREF_HHPOT_PC0)
+    {
+    case PREF_HHPOT_PC0_TEMPO:
+       Pot3.run(0, CPot::TEMPO, milliseconds);
+       break;
+    case PREF_HHPOT_PC0_GATE:
+       Pot3.run(0, CPot::GATELEN, milliseconds);
+       break;
+    case PREF_HHPOT_PC0_CC:
+       Pot3.run(0, HH_CC_PC0, milliseconds);
+       break;
+    }
+
+    if(!!(gPreferences & PREF_HHSW_PB3)) {        
+       if(!digitalRead(P_HH_SW_PB3)) {
+         synchFlags |= SYNCH_HOLD_AT_ZERO|SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+       }           
+    }
+    else {
+       if(!digitalRead(P_HH_SW_PB3))
+         arpFlags |= ARP_FLAG_MUTE;
+    }
+  }    
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3776,7 +3829,7 @@ void editRun(unsigned long milliseconds)
     uiMenuKey = NO_VALUE;
     
     // check if HOLD is pressed
-    if(uiHoldType & UI_HOLD_PRESSED) 
+    if((uiHoldType & (UI_HOLD_PRESSED|UI_HOLD_HELD)) == UI_HOLD_PRESSED)
     {
       if(hhMode == HH_MODE_CVTAB || hhMode == HH_MODE_MEMOTAB) {
         // the hold button was pressed at the same time that a menu button was 
@@ -4011,64 +4064,54 @@ void setup() {
   prefsApply();
   
   // pressing hold switch at startup shows UI version
-  uiShowVersion();
-
-  // reset default EEPROM settings
-  if(uiMenuKey == UI_KEY_C1 || (eepromGet(EEPROM_MAGIC_COOKIE) != EEPROM_MAGIC_COOKIE_VALUE))
-  {
-    midiSendChannel = 0;
-    midiReceiveChannel = MIDI_OMNI;
-    midiOptions = MIDI_OPTS_DEFAULT_VALUE;
-    synchFlags = 0;
-    gPreferences = 
-      PREF_AUTOREVERT | 
-      PREF_LONGPRESS2 | 
-      PREF_LEDPROFILE2;
-    arpOptions = 
-      ARP_OPT_SKIPONREST;
-  
-    eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
-    eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
-    eepromSet(EEPROM_MIDI_OPTS, MIDI_OPTS_DEFAULT_VALUE);
-    eepromSet(EEPROM_MIDI_OPTS2, MIDI_OPTS2_DEFAULT_VALUE);
-    eepromSet(EEPROM_SYNCH_SOURCE,0);
-    eepromSet(EEPROM_SYNCH_SEND,0);  
-    eepromSet(EEPROM_HH_MODE, 0); 
-    prefsSave();
-    prefsApply();
-    arpOptionsSave();
-    arpOptionsApply();
-    eepromSet(EEPROM_MAGIC_COOKIE,EEPROM_MAGIC_COOKIE_VALUE);  
-    
-    uiSetLeds(0, 16, uiLedBright);
-    delay(1000);
-    editFlags |= EDIT_FLAG_FORCE_REFRESH;
-  }  
-  // pressing a data key when version is displayed allows hack header
-  // mode to be changed
-  else if(uiDataKey >= HH_MODE_NONE && uiDataKey <= HH_MODE_MEMOTAB) {
-    hhMode = uiDataKey;
-    gPreferences &= ~PREF_HACKHEADER;
-    eepromSet(EEPROM_HH_MODE, hhMode); 
-    uiSetLeds(0, 16, 0);
-    uiSetLeds(0, 5, uiLedMedium);
-    for(int i=0; i<4; ++i) {
-      uiSetLeds(hhMode, 1, uiLedBright);
-      delay(200);
-      uiSetLeds(hhMode, 1, uiLedMedium);
-      delay(200);
-    }
-
-    // reboot after changing the hack header mode
+  if(uiShowVersion()) {
     void(*reboot)() = 0;      
-    reboot();
-  }
-  else if(hhMode == HH_MODE_CVTAB && uiDataKey == 15) {
-    uiSetLeds(0, 16, 0);
-    uiSetLeds(15, 1, uiLedBright);
-    delay(1000);
-    hhCVCal = 1;  
-    uiDataKey = NO_VALUE;
+    byte do_reboot= 0;
+    
+    // reset default EEPROM settings
+    if(uiMenuKey == UI_KEY_C1 || (eepromGet(EEPROM_MAGIC_COOKIE) != EEPROM_MAGIC_COOKIE_VALUE))
+    {
+      midiSendChannel = 0;
+      midiReceiveChannel = MIDI_OMNI;
+      midiOptions = MIDI_OPTS_DEFAULT_VALUE;
+      synchFlags = 0;
+      gPreferences = 
+        PREF_AUTOREVERT | 
+        PREF_LONGPRESS2 | 
+        PREF_LEDPROFILE2;
+      arpOptions = 
+        ARP_OPT_SKIPONREST;
+    
+      eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
+      eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
+      eepromSet(EEPROM_MIDI_OPTS, MIDI_OPTS_DEFAULT_VALUE);
+      eepromSet(EEPROM_MIDI_OPTS2, MIDI_OPTS2_DEFAULT_VALUE);
+      eepromSet(EEPROM_SYNCH_SOURCE,0);
+      eepromSet(EEPROM_SYNCH_SEND,0);  
+      eepromSet(EEPROM_HH_MODE, HH_MODE_NONE); 
+      prefsSave();
+      arpOptionsSave();
+      eepromSet(EEPROM_MAGIC_COOKIE,EEPROM_MAGIC_COOKIE_VALUE);  
+      
+      uiSetLeds(0, 16, uiLedBright);
+      delay(1000);
+      reboot();
+    }  
+    
+    // pressing a data key when version is displayed allows hack header
+    // mode to be changed
+    if(uiDataKey >= HH_MODE_NONE && uiDataKey <= HH_MODE_MEMOTAB) {
+      hhMode = uiDataKey;
+      gPreferences &= ~PREF_HACKHEADER;
+      eepromSet(EEPROM_HH_MODE, hhMode); 
+    }
+    if(uiDataKey != NO_VALUE) {    
+      uiSetLeds(0, 16, 0);
+      uiSetLeds(0, 5, uiLedMedium);
+      uiSetLeds(hhMode, 1, uiLedBright);
+      delay(1000);
+      reboot();
+    }
   }
   
   if(midiOptions & MIDI_OPTS_LOCAL_OFF) {
