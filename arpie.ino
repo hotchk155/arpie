@@ -129,6 +129,7 @@ char hhCVCalOfs;
 long hhDACCurrent;
 long hhDACTarget;
 long hhDACIncrement;
+byte hhGateState;
 
 // Hack header function prototypes
 void hhSetCV(long note);
@@ -2611,25 +2612,20 @@ void hhSetCV(long note) {
       while(cv<0) cv+=500;
       while(cv>4095) cv-=500;
 
-      if(hhDACCurrent) {
-        hhDACTarget = (((long)cv)<<16);
-        hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
-        if(!hhDACIncrement) {
-          hhDACCurrent = 0;
-        }
-      }
-
-      if(!hhDACCurrent) {
+      hhDACTarget = (((long)cv)<<16);
+      hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
+      // is the gate currently closed or are we already at the required CV?
+      if(!hhGateState || !hhDACIncrement) {
+        // immediately set the requested CV
         hhSetDAC(cv);
-        hhDACCurrent = (cv<<16);
+        hhDACCurrent = hhDACTarget;      
+        hhDACIncrement = 0;
       }
 }
 
 void hhSetGate(byte state) {
-  if(!state) {
-    hhDACCurrent = 0;
-  }
   digitalWrite(P_HH_CVTAB_GATE,state);      
+  hhGateState = state;
 }
 
 #define HH_CAL_ADDR     0x1FF7 // top 8 bytes of slot for patch 15
@@ -2679,6 +2675,8 @@ void hhInit()
   hhDACTarget = 0;
   hhDACIncrement = 0;
 
+  hhGateState = 0;
+
   if(hhMode == HH_MODE_CVTAB) {
     Wire.begin();
     Wire.beginTransmission(DAC_ADDR); 
@@ -2699,20 +2697,16 @@ void hhRun(unsigned long milliseconds)
     if((byte)milliseconds == hhTime)
       return;
     hhTime = (byte)(milliseconds);
-    if(hhDACCurrent) {
-      if(hhDACCurrent < hhDACTarget) {
-        hhDACCurrent += hhDACIncrement;
-        if(hhDACCurrent >= hhDACTarget) {
-          hhDACCurrent = hhDACTarget ;
-          hhDACIncrement = 0;
-        }
-      }
-      else if(hhDACCurrent > hhDACTarget) {
-        hhDACCurrent -= hhDACIncrement;
-        if(hhDACCurrent <= hhDACTarget) {
-          hhDACCurrent = hhDACTarget ;
-          hhDACIncrement = 0;
-        }
+    if(!hhDACIncrement) {
+      // do nothing
+    }
+    else {
+      // run CV glide, stopping when target CV is reached
+      hhDACCurrent += hhDACIncrement;
+      if((hhDACIncrement > 0 && hhDACCurrent >= hhDACTarget) || 
+        (hhDACIncrement < 0 && hhDACCurrent <= hhDACTarget)) {
+        hhDACCurrent = hhDACTarget;
+        hhDACIncrement = 0;
       }
       hhSetDAC(hhDACCurrent>>16);
     }
