@@ -26,7 +26,7 @@
 //    5.3   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 //
 #define VERSION_HI  5
-#define VERSION_LO  3
+#define VERSION_LO  55
 
 //
 // INCLUDE FILES
