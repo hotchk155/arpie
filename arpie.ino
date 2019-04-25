@@ -79,6 +79,7 @@ enum {
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
   
   PREF_HH_8THCLOCK=     (unsigned int)0b1000000000000000,
+  PREF_HH_CVTAB_ACC=    (unsigned int)0b0100000000000000,
   PREF_HH_CVCAL=        (unsigned int)0b0000000100000000,
       
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
@@ -1063,11 +1064,11 @@ byte synchTickToPulseRatio;
 #define P_SYNCH_HH_CLKIN                 14
 #define P_CVTAB_HH_CLKOUT                11  
 #if SYNCH_HH_CLOCK_ACTIVELOW    
-  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
-  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, HIGH);}
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, LOW);}
 #else
-  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
-  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, LOW);}
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, HIGH);}
 #endif
 #define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
 #define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
@@ -1344,7 +1345,7 @@ void synchInit()
     synchClockOutPin = P_SYNCH_HH_CLKOUT;
   }
   else if(hhMode == HH_MODE_CVTAB) {
-     pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
+    pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
     synchClockOutPin = P_CVTAB_HH_CLKOUT;
   }
   interrupts();
@@ -2216,6 +2217,8 @@ void arpRun(unsigned long milliseconds)
       }      
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
+
+    hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
  
     // check there is a note (not a rest at this) point in the pattern
     if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
@@ -2254,12 +2257,15 @@ void arpRun(unsigned long milliseconds)
             note-=5;
           // determine note velocity
           byte velocity;          
-          if(arpFlags & ARP_FLAG_MUTE)
+          if(arpFlags & ARP_FLAG_MUTE) {
             velocity = 0;
-          else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
+          }
+          else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT) {
             velocity = _P.arpAccentVelocity;
-          else
+          }
+          else {
             velocity = _P.arpVelocityMode? _P.arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+          }
     
           // start the note playing
           if(note > 0)
@@ -2631,6 +2637,11 @@ void hhSetCV(long note) {
 void hhSetGate(byte state) {
   digitalWrite(P_HH_CVTAB_GATE,state);      
   hhGateState = state;
+}
+void hhSetAccent(byte state) {
+  if((hhMode == HH_MODE_CVTAB) && (gPreferences & PREF_HH_CVTAB_ACC)) {
+    digitalWrite(P_CVTAB_HH_CLKOUT, state? HIGH:LOW);
+  }
 }
 
 #define HH_CAL_ADDR     0x1FF7 // top 8 bytes of slot for patch 15
