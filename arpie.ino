@@ -138,8 +138,11 @@ void hhCVCalSave();
 
 // Forward declare the UI refresh flag
 #define EDIT_FLAG_FORCE_REFRESH 0x01
-#define EDIT_FLAG_IS_HELD       0x02
-#define EDIT_FLAG_IS_NEW        0x04
+#define EDIT_FLAG_IS_HELD       0x02    // means that a menu button is held down
+#define EDIT_FLAG_IS_NEW        0x04    
+#define EDIT_FLAG_1             0x10    // these flags are used for some special button logic
+#define EDIT_FLAG_2             0x20
+
 extern byte editFlags;
 
 #define SYNCH_TO_MIDI                  0x0001    // This flag indicates we are slaving to MIDI clock
@@ -1541,16 +1544,19 @@ enum {
   ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
   ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
   ARP_OPTS_MASK           = (unsigned)0b1010000000000000,
-
-  ARP_LAYER_ACCENT        = (unsigned)0b0000000000000001,
-  ARP_LAYER_GLIDE         = (unsigned)0b0000000000000010,
-  ARP_LAYER_TIE           = (unsigned)0b0000000000000100,
-  ARP_LAYER_OCTUP         = (unsigned)0b0000000000001000,
-  ARP_LAYER_OCTDN         = (unsigned)0b0000000000010000,
-  ARP_LAYER_4THDN         = (unsigned)0b0000000000100000,
-  ARP_LAYER_PLAYTHRU      = (unsigned)0b0000000001000000,
-  ARP_LAYER_MASK          = (unsigned)0b0000000001111111
 };
+
+enum {
+  ARP_SHOW_PATN,
+  ARP_SHOW_ACCENT,
+  ARP_SHOW_GLIDE,
+  ARP_SHOW_TIE,
+  ARP_SHOW_OCTUP,
+  ARP_SHOW_OCTDN,
+  ARP_SHOW_4THDN,
+  ARP_SHOW_PLAYTHRU
+};
+byte arpShowLayer;
 
 ////////////////////////////////////////////////////////////////////////////////
 // APPLY ARP OPTIONS BITS TO VARIABLES
@@ -1599,6 +1605,7 @@ void arpInit()
   arpRefresh = 0;
   arpFlags = 0;
   arpLastVelocityCC = 0xFF;
+  arpShowLayer = ARP_SHOW_PATN;
   
   _P.arpType = ARP_TYPE_UP;
   _P.arpOctaveShift = 0;
@@ -1616,8 +1623,6 @@ void arpInit()
   _P.arpManualChord = 0;
   _P.arpTransposeSequenceLen = 0;
   arpOptionsLoad();
-  arpOptions &= ~ARP_LAYER_MASK;
-  arpOptions |= ARP_LAYER_ACCENT;
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
@@ -2852,72 +2857,74 @@ void editInit()
 // EDIT PATTERN
 void editPattern(char keyPress, byte forceRefresh)
 {
-  if(keyPress != NO_VALUE)
-  {
-    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ ARP_PATN_PLAY);
-    forceRefresh = 1;
-  }
+  static const byte extBit[]={
+    ARP_PATN_PLAY,
+    ARP_PATN_PLAYTHRU,
+    ARP_PATN_4TH,
+    ARP_PATN_OCTDN,
+    ARP_PATN_OCTAVE,
+    ARP_PATN_TIE,
+    ARP_PATN_GLIDE,
+    ARP_PATN_ACCENT
+  };
+  if(editFlags & EDIT_FLAG_IS_HELD) { // PATN button is down now. 
 
+    // has the PATN button just been pressed on this call 
+    // into the function? if so clear the flag that records
+    // whether a layer change has taken place
+    if(!(editFlags & EDIT_FLAG_1)) {
+      editFlags |= EDIT_FLAG_1;
+      editFlags &= ~EDIT_FLAG_2;
+    }
+    if(keyPress != NO_VALUE && keyPress > 8) { // is a layer button pressed?      
+      arpShowLayer = keyPress - 8;      
+      editFlags |= EDIT_FLAG_2; // record that the user has changed layer
+      //state = 2; // user has changed layer
+      forceRefresh = 1;      
+    }    
+  }
+  else {
+
+    // use the flags to work out if the PATN button has been released
+    // without a layer change in between. This action cancels returns
+    // back to the main pattern later
+    if((editFlags & EDIT_FLAG_1) && !(editFlags & EDIT_FLAG_2)) {
+      arpShowLayer = ARP_SHOW_PATN;
+      forceRefresh = 1;
+    }
+    // clear both the flags 
+    editFlags &= ~(EDIT_FLAG_1|EDIT_FLAG_2);
+    
+    if(keyPress != NO_VALUE)
+    {
+      _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit[arpShowLayer]);
+      forceRefresh = 1;
+    }
+  }
+  
   if(forceRefresh || arpRefresh)
-  {    
-    // copy the leds
-    for(int i=0; i<16; ++i)
-      uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+  {   
+    if(arpShowLayer == ARP_SHOW_PATN) {
+      for(int i=0; i<16; ++i) {
+        uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+      }
+    }
+    else {
+      // copy the leds
+      for(int i=0; i<16; ++i) {
+        if((_P.arpPattern[i] & ARP_PATN_PLAY)) {
+            uiLeds[i] = (_P.arpPattern[i] & extBit[arpShowLayer]) ? uiLedMedium : uiLedDim;
+        }
+        else {
+            uiLeds[i] = (_P.arpPattern[i] & extBit[arpShowLayer]) ? uiLedDim : 0;          
+        }
+      }
+    }
 
     // only display the play position if we have a sequence
     if(arpSequenceLength) {
-        uiLeds[arpPatternIndex] = uiLedBright;
-    }
-
-    // reset the flag
-    arpRefresh = 0;
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// EDIT PATTERN EXTENDED
-void editPatternExt(char keyPress, byte forceRefresh)
-{
-  byte extBit = ARP_PATN_ACCENT;
-  if(arpOptions & ARP_LAYER_ACCENT) {
-    extBit = ARP_PATN_ACCENT;
-  }
-  else if(arpOptions & ARP_LAYER_GLIDE) {
-    extBit = ARP_PATN_GLIDE;
-  }
-  else if(arpOptions & ARP_LAYER_TIE) {
-    extBit = ARP_PATN_TIE;
-  }
-  else if(arpOptions & ARP_LAYER_OCTUP) {
-    extBit = ARP_PATN_OCTAVE;
-  }
-  else if(arpOptions & ARP_LAYER_OCTDN) {
-    extBit = ARP_PATN_OCTDN;
-  }
-  else if(arpOptions & ARP_LAYER_4THDN) {
-    extBit = ARP_PATN_4TH;
-  }
-  else if(arpOptions & ARP_LAYER_PLAYTHRU) {
-    extBit = ARP_PATN_PLAYTHRU; 
-  }
-    
-  if(keyPress != NO_VALUE)
-  {
-    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit);
-    forceRefresh = 1;
-  }
-
-  if(forceRefresh || arpRefresh)
-  {    
-    // copy the leds
-    for(int i=0; i<16; ++i) {
-      uiLeds[i] = (_P.arpPattern[i] & extBit) ? uiLedMedium : (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedDim : 0;
-    }
-
-    // only display the play position if we have a sequence
-    if(arpSequenceLength)    
       uiLeds[arpPatternIndex] = uiLedBright;
-
+    }
     // reset the flag
     arpRefresh = 0;
   }
@@ -3008,24 +3015,18 @@ void editArpOptions(char keyPress, byte forceRefresh)
   int i;
   if(keyPress >= 0 && keyPress < 16) {
     unsigned int b = (1<<(15-keyPress));
-    if(b & (ARP_LAYER_MASK|ARP_OPTS_MASK))
+    if(b & ARP_OPTS_MASK)
     {
-      if(b & ARP_LAYER_MASK) {
-        arpOptions &= ~ARP_LAYER_MASK;
-        arpOptions |= b;
-      }
-      else {
-        arpOptions^=b;
-        arpOptionsSave();
-        arpOptionsApply();
-      }
-      forceRefresh = 1;
+       arpOptions^=b;
+       arpOptionsSave();
+       arpOptionsApply();
+       forceRefresh = 1;
     } 
   }
 
   if(forceRefresh)
   {
-    uiSetLeds(ARP_OPTS_MASK|ARP_LAYER_MASK, arpOptions);
+    uiSetLeds(ARP_OPTS_MASK, arpOptions);
   }
 }
 
@@ -3863,7 +3864,7 @@ void editRun(unsigned long milliseconds)
   // is any menu key currently held?
   if(uiLastMenuKey != NO_VALUE)
   {
-    editFlags |= EDIT_FLAG_IS_HELD;      
+    editFlags |= EDIT_FLAG_IS_HELD;          
     
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
@@ -3910,11 +3911,8 @@ void editRun(unsigned long milliseconds)
   switch(editMode)
   {
   case EDIT_MODE_PATTERN:
-    if(editPressType >= EDIT_LONG_HOLD)
-      editPatternExt(dataKeyPress, forceRefresh);
-    else 
-      editPattern(dataKeyPress, forceRefresh);
-    break;    
+    editPattern(dataKeyPress, forceRefresh);
+    break;
   case EDIT_MODE_PATTERN_LENGTH:
     if(editPressType >= EDIT_LONG_HOLD)
       editPreferences(dataKeyPress, forceRefresh);
