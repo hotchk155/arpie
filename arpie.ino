@@ -108,6 +108,11 @@ enum {
   HH_MODE_MEMOTAB
 };
 
+enum {
+  HH_GATE_CLOSE,
+  HH_GATE_OPEN,
+  HH_GATE_RETRIG
+};
 #define P_HH_CVTAB_GATE 14
 
 #define HH_CVCAL_CC_SCALE   70
@@ -130,7 +135,7 @@ char hhCVCalOfs;
 long hhDACCurrent;
 long hhDACTarget;
 long hhDACIncrement;
-byte hhGateState;
+byte hhGlideActive;
 
 // Hack header function prototypes
 void hhSetCV(long note, byte glide);
@@ -2280,9 +2285,13 @@ void arpRun(unsigned long milliseconds)
 
       if(note > 0)
       { 
-        if(hhMode == HH_MODE_CVTAB) {
-          hhSetCV(note, (glide == 2));
-          hhSetGate(1);
+        if(hhGlideActive) {
+          hhSetCV(note, 1);
+          hhSetGate(HH_GATE_OPEN);        
+        }
+        else {
+          hhSetCV(note, 0);
+          hhSetGate(HH_GATE_RETRIG);          
         }
         
         // if the previous note is still playing when a new one is played
@@ -2295,21 +2304,25 @@ void arpRun(unsigned long milliseconds)
       {
           // tie          
           arpStopNoteTime = 0;
+          hhGlideActive = 1;
       }
       else if(glide == 1) 
       {
          // full step
          arpStopNoteTime = milliseconds + synchStepPeriod;
+         hhGlideActive = 0;
       }
       else if(_P.arpGateLength)
       {              
         // work out the gate length for this note
         arpStopNoteTime = milliseconds + (synchStepPeriod * _P.arpGateLength) / 150;
+        hhGlideActive = 0;
       }
       else
       {
         // note till play till the next one starts
         arpStopNoteTime = 0;               
+        hhGlideActive = 0;
       }
     }
 
@@ -2326,7 +2339,7 @@ void arpRun(unsigned long milliseconds)
     arpStopNotes(milliseconds, NULL);
     arpStopNoteTime = 0;
     if(hhMode == HH_MODE_CVTAB) {
-      hhSetGate(0);
+      hhSetGate(HH_GATE_CLOSE);
     }
   }
 }
@@ -2623,9 +2636,9 @@ void hhSetCV(long note, byte glide) {
       while(cv<0) cv+=500;
       while(cv>4095) cv-=500;
 
-      hhDACTarget = (((long)cv)<<16);
-      hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
-      // is the gate currently closed or are we already at the required CV?
+      hhDACTarget = cv<<16;
+      hhDACIncrement = (hhDACTarget - hhDACCurrent)/((long)synchStepPeriod);        
+      
       if(!glide || !hhDACIncrement) {
         // immediately set the requested CV
         hhSetDAC(cv);
@@ -2635,8 +2648,17 @@ void hhSetCV(long note, byte glide) {
 }
 
 void hhSetGate(byte state) {
-  digitalWrite(P_HH_CVTAB_GATE,state);      
-  hhGateState = state;
+  switch(state) {
+    case HH_GATE_CLOSE:
+      digitalWrite(P_HH_CVTAB_GATE,LOW);      
+      break;
+    case HH_GATE_RETRIG:
+      digitalWrite(P_HH_CVTAB_GATE,LOW);      
+      delay(1);
+    case HH_GATE_OPEN:
+      digitalWrite(P_HH_CVTAB_GATE,HIGH);      
+      break;
+   }
 }
 void hhSetAccent(byte state) {
   if((hhMode == HH_MODE_CVTAB) && (gPreferences & PREF_HH_CVTAB_ACC)) {
@@ -2690,9 +2712,8 @@ void hhInit()
   hhDACCurrent = 0;
   hhDACTarget = 0;
   hhDACIncrement = 0;
-
-  hhGateState = 0;
-
+  hhGlideActive = 0;
+  
   if(hhMode == HH_MODE_CVTAB) {
     Wire.begin();
     Wire.beginTransmission(DAC_ADDR); 
@@ -2719,11 +2740,19 @@ void hhRun(unsigned long milliseconds)
     else {
       // run CV glide, stopping when target CV is reached
       hhDACCurrent += hhDACIncrement;
-      if((hhDACIncrement > 0 && hhDACCurrent >= hhDACTarget) || 
-        (hhDACIncrement < 0 && hhDACCurrent <= hhDACTarget)) {
-        hhDACCurrent = hhDACTarget;
-        hhDACIncrement = 0;
+      if(hhDACIncrement > 0) {
+        if(hhDACCurrent >= hhDACTarget) {
+          hhDACCurrent = hhDACTarget;
+          hhDACIncrement = 0;
+        }
       }
+      else
+      {
+        if(hhDACCurrent <= hhDACTarget) {
+          hhDACCurrent = hhDACTarget;
+          hhDACIncrement = 0;
+        }
+      }               
       hhSetDAC(hhDACCurrent>>16);
     }
   }
@@ -4141,4 +4170,3 @@ void loop()
 }
 
 //EOF
-
