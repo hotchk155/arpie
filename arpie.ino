@@ -133,7 +133,7 @@ long hhDACIncrement;
 byte hhGateState;
 
 // Hack header function prototypes
-void hhSetCV(long note);
+void hhSetCV(long note, byte glide);
 void hhSetGate(byte state);
 void hhCVCalSave();
 
@@ -945,7 +945,7 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
                   hhCVCalOfs = (midiParams[1]&0x7F)-64;
                   break;
                 case HH_CVCAL_CC_SET:
-                  hhSetCV(midiParams[1]);
+                  hhSetCV(midiParams[1],0);
                   break;
                 case HH_CVCAL_CC_SAVE:
                   gPreferences &= ~PREF_HH_CVCAL;
@@ -2281,7 +2281,7 @@ void arpRun(unsigned long milliseconds)
       if(note > 0)
       { 
         if(hhMode == HH_MODE_CVTAB) {
-          hhSetCV(note);
+          hhSetCV(note, (glide == 2));
           hhSetGate(1);
         }
         
@@ -2617,7 +2617,7 @@ void hhSetDAC(int dac) {
       Wire.write((byte)dac); 
       Wire.endTransmission();         
 }
-void hhSetCV(long note) {
+void hhSetCV(long note, byte glide) {
       long cv = (((note-12) * 500)/12);
       cv = ((cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
       while(cv<0) cv+=500;
@@ -2626,7 +2626,7 @@ void hhSetCV(long note) {
       hhDACTarget = (((long)cv)<<16);
       hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
       // is the gate currently closed or are we already at the required CV?
-      if(!hhGateState || !hhDACIncrement) {
+      if(!glide || !hhDACIncrement) {
         // immediately set the requested CV
         hhSetDAC(cv);
         hhDACCurrent = hhDACTarget;      
