@@ -79,6 +79,7 @@ enum {
   PREF_HHPOT_PC5_CC=     (unsigned int)0b0000001100000000,
   
   PREF_HH_8THCLOCK=     (unsigned int)0b1000000000000000,
+  PREF_HH_CVTAB_ACC=    (unsigned int)0b0100000000000000,
   PREF_HH_CVCAL=        (unsigned int)0b0000000100000000,
       
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
@@ -132,14 +133,17 @@ long hhDACIncrement;
 byte hhGateState;
 
 // Hack header function prototypes
-void hhSetCV(long note);
+void hhSetCV(long note, byte glide);
 void hhSetGate(byte state);
 void hhCVCalSave();
 
 // Forward declare the UI refresh flag
 #define EDIT_FLAG_FORCE_REFRESH 0x01
-#define EDIT_FLAG_IS_HELD       0x02
-#define EDIT_FLAG_IS_NEW        0x04
+#define EDIT_FLAG_IS_HELD       0x02    // means that a menu button is held down
+#define EDIT_FLAG_IS_NEW        0x04    
+#define EDIT_FLAG_1             0x10    // these flags are used for some special button logic
+#define EDIT_FLAG_2             0x20
+
 extern byte editFlags;
 
 #define SYNCH_TO_MIDI                  0x0001    // This flag indicates we are slaving to MIDI clock
@@ -941,7 +945,7 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
                   hhCVCalOfs = (midiParams[1]&0x7F)-64;
                   break;
                 case HH_CVCAL_CC_SET:
-                  hhSetCV(midiParams[1]);
+                  hhSetCV(midiParams[1],0);
                   break;
                 case HH_CVCAL_CC_SAVE:
                   gPreferences &= ~PREF_HH_CVCAL;
@@ -1060,11 +1064,11 @@ byte synchTickToPulseRatio;
 #define P_SYNCH_HH_CLKIN                 14
 #define P_CVTAB_HH_CLKOUT                11  
 #if SYNCH_HH_CLOCK_ACTIVELOW    
-  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
-  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, HIGH);}
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, LOW);}
 #else
-  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin) digitalWrite(synchClockOutPin, LOW);}
-  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin) digitalWrite(synchClockOutPin, HIGH);}
+  #define SYNCH_HH_CLOCK_OFF          {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, LOW);}
+  #define SYNCH_HH_CLOCK_ON           {if(synchClockOutPin && !(gPreferences & PREF_HH_CVTAB_ACC)) digitalWrite(synchClockOutPin, HIGH);}
 #endif
 #define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
 #define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
@@ -1341,7 +1345,7 @@ void synchInit()
     synchClockOutPin = P_SYNCH_HH_CLKOUT;
   }
   else if(hhMode == HH_MODE_CVTAB) {
-     pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
+    pinMode(P_CVTAB_HH_CLKOUT, OUTPUT);    
     synchClockOutPin = P_CVTAB_HH_CLKOUT;
   }
   interrupts();
@@ -1541,16 +1545,19 @@ enum {
   ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
   ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
   ARP_OPTS_MASK           = (unsigned)0b1010000000000000,
-
-  ARP_LAYER_ACCENT        = (unsigned)0b0000000000000001,
-  ARP_LAYER_GLIDE         = (unsigned)0b0000000000000010,
-  ARP_LAYER_TIE           = (unsigned)0b0000000000000100,
-  ARP_LAYER_OCTUP         = (unsigned)0b0000000000001000,
-  ARP_LAYER_OCTDN         = (unsigned)0b0000000000010000,
-  ARP_LAYER_4THDN         = (unsigned)0b0000000000100000,
-  ARP_LAYER_PLAYTHRU      = (unsigned)0b0000000001000000,
-  ARP_LAYER_MASK          = (unsigned)0b0000000001111111
 };
+
+enum {
+  ARP_SHOW_PATN,
+  ARP_SHOW_ACCENT,
+  ARP_SHOW_GLIDE,
+  ARP_SHOW_TIE,
+  ARP_SHOW_OCTUP,
+  ARP_SHOW_OCTDN,
+  ARP_SHOW_4THDN,
+  ARP_SHOW_PLAYTHRU
+};
+byte arpShowLayer;
 
 ////////////////////////////////////////////////////////////////////////////////
 // APPLY ARP OPTIONS BITS TO VARIABLES
@@ -1599,6 +1606,7 @@ void arpInit()
   arpRefresh = 0;
   arpFlags = 0;
   arpLastVelocityCC = 0xFF;
+  arpShowLayer = ARP_SHOW_PATN;
   
   _P.arpType = ARP_TYPE_UP;
   _P.arpOctaveShift = 0;
@@ -1616,8 +1624,6 @@ void arpInit()
   _P.arpManualChord = 0;
   _P.arpTransposeSequenceLen = 0;
   arpOptionsLoad();
-  arpOptions &= ~ARP_LAYER_MASK;
-  arpOptions |= ARP_LAYER_ACCENT;
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
@@ -2211,6 +2217,8 @@ void arpRun(unsigned long milliseconds)
       }      
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
+
+    hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
  
     // check there is a note (not a rest at this) point in the pattern
     if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
@@ -2249,12 +2257,15 @@ void arpRun(unsigned long milliseconds)
             note-=5;
           // determine note velocity
           byte velocity;          
-          if(arpFlags & ARP_FLAG_MUTE)
+          if(arpFlags & ARP_FLAG_MUTE) {
             velocity = 0;
-          else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
+          }
+          else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT) {
             velocity = _P.arpAccentVelocity;
-          else
+          }
+          else {
             velocity = _P.arpVelocityMode? _P.arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+          }
     
           // start the note playing
           if(note > 0)
@@ -2270,7 +2281,7 @@ void arpRun(unsigned long milliseconds)
       if(note > 0)
       { 
         if(hhMode == HH_MODE_CVTAB) {
-          hhSetCV(note);
+          hhSetCV(note, (glide == 2));
           hhSetGate(1);
         }
         
@@ -2606,7 +2617,7 @@ void hhSetDAC(int dac) {
       Wire.write((byte)dac); 
       Wire.endTransmission();         
 }
-void hhSetCV(long note) {
+void hhSetCV(long note, byte glide) {
       long cv = (((note-12) * 500)/12);
       cv = ((cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
       while(cv<0) cv+=500;
@@ -2615,7 +2626,7 @@ void hhSetCV(long note) {
       hhDACTarget = (((long)cv)<<16);
       hhDACIncrement = (hhDACTarget - hhDACCurrent)/synchStepPeriod;        
       // is the gate currently closed or are we already at the required CV?
-      if(!hhGateState || !hhDACIncrement) {
+      if(!glide || !hhDACIncrement) {
         // immediately set the requested CV
         hhSetDAC(cv);
         hhDACCurrent = hhDACTarget;      
@@ -2626,6 +2637,11 @@ void hhSetCV(long note) {
 void hhSetGate(byte state) {
   digitalWrite(P_HH_CVTAB_GATE,state);      
   hhGateState = state;
+}
+void hhSetAccent(byte state) {
+  if((hhMode == HH_MODE_CVTAB) && (gPreferences & PREF_HH_CVTAB_ACC)) {
+    digitalWrite(P_CVTAB_HH_CLKOUT, state? HIGH:LOW);
+  }
 }
 
 #define HH_CAL_ADDR     0x1FF7 // top 8 bytes of slot for patch 15
@@ -2852,72 +2868,74 @@ void editInit()
 // EDIT PATTERN
 void editPattern(char keyPress, byte forceRefresh)
 {
-  if(keyPress != NO_VALUE)
-  {
-    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ ARP_PATN_PLAY);
-    forceRefresh = 1;
-  }
+  static const byte extBit[]={
+    ARP_PATN_PLAY,
+    ARP_PATN_PLAYTHRU,
+    ARP_PATN_4TH,
+    ARP_PATN_OCTDN,
+    ARP_PATN_OCTAVE,
+    ARP_PATN_TIE,
+    ARP_PATN_GLIDE,
+    ARP_PATN_ACCENT
+  };
+  if(editFlags & EDIT_FLAG_IS_HELD) { // PATN button is down now. 
 
+    // has the PATN button just been pressed on this call 
+    // into the function? if so clear the flag that records
+    // whether a layer change has taken place
+    if(!(editFlags & EDIT_FLAG_1)) {
+      editFlags |= EDIT_FLAG_1;
+      editFlags &= ~EDIT_FLAG_2;
+    }
+    if(keyPress != NO_VALUE && keyPress > 8) { // is a layer button pressed?      
+      arpShowLayer = keyPress - 8;      
+      editFlags |= EDIT_FLAG_2; // record that the user has changed layer
+      //state = 2; // user has changed layer
+      forceRefresh = 1;      
+    }    
+  }
+  else {
+
+    // use the flags to work out if the PATN button has been released
+    // without a layer change in between. This action cancels returns
+    // back to the main pattern later
+    if((editFlags & EDIT_FLAG_1) && !(editFlags & EDIT_FLAG_2)) {
+      arpShowLayer = ARP_SHOW_PATN;
+      forceRefresh = 1;
+    }
+    // clear both the flags 
+    editFlags &= ~(EDIT_FLAG_1|EDIT_FLAG_2);
+    
+    if(keyPress != NO_VALUE)
+    {
+      _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit[arpShowLayer]);
+      forceRefresh = 1;
+    }
+  }
+  
   if(forceRefresh || arpRefresh)
-  {    
-    // copy the leds
-    for(int i=0; i<16; ++i)
-      uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+  {   
+    if(arpShowLayer == ARP_SHOW_PATN) {
+      for(int i=0; i<16; ++i) {
+        uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+      }
+    }
+    else {
+      // copy the leds
+      for(int i=0; i<16; ++i) {
+        if((_P.arpPattern[i] & ARP_PATN_PLAY)) {
+            uiLeds[i] = (_P.arpPattern[i] & extBit[arpShowLayer]) ? uiLedMedium : uiLedDim;
+        }
+        else {
+            uiLeds[i] = (_P.arpPattern[i] & extBit[arpShowLayer]) ? uiLedDim : 0;          
+        }
+      }
+    }
 
     // only display the play position if we have a sequence
     if(arpSequenceLength) {
-        uiLeds[arpPatternIndex] = uiLedBright;
-    }
-
-    // reset the flag
-    arpRefresh = 0;
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// EDIT PATTERN EXTENDED
-void editPatternExt(char keyPress, byte forceRefresh)
-{
-  byte extBit = ARP_PATN_ACCENT;
-  if(arpOptions & ARP_LAYER_ACCENT) {
-    extBit = ARP_PATN_ACCENT;
-  }
-  else if(arpOptions & ARP_LAYER_GLIDE) {
-    extBit = ARP_PATN_GLIDE;
-  }
-  else if(arpOptions & ARP_LAYER_TIE) {
-    extBit = ARP_PATN_TIE;
-  }
-  else if(arpOptions & ARP_LAYER_OCTUP) {
-    extBit = ARP_PATN_OCTAVE;
-  }
-  else if(arpOptions & ARP_LAYER_OCTDN) {
-    extBit = ARP_PATN_OCTDN;
-  }
-  else if(arpOptions & ARP_LAYER_4THDN) {
-    extBit = ARP_PATN_4TH;
-  }
-  else if(arpOptions & ARP_LAYER_PLAYTHRU) {
-    extBit = ARP_PATN_PLAYTHRU; 
-  }
-    
-  if(keyPress != NO_VALUE)
-  {
-    _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit);
-    forceRefresh = 1;
-  }
-
-  if(forceRefresh || arpRefresh)
-  {    
-    // copy the leds
-    for(int i=0; i<16; ++i) {
-      uiLeds[i] = (_P.arpPattern[i] & extBit) ? uiLedMedium : (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedDim : 0;
-    }
-
-    // only display the play position if we have a sequence
-    if(arpSequenceLength)    
       uiLeds[arpPatternIndex] = uiLedBright;
-
+    }
     // reset the flag
     arpRefresh = 0;
   }
@@ -3008,24 +3026,18 @@ void editArpOptions(char keyPress, byte forceRefresh)
   int i;
   if(keyPress >= 0 && keyPress < 16) {
     unsigned int b = (1<<(15-keyPress));
-    if(b & (ARP_LAYER_MASK|ARP_OPTS_MASK))
+    if(b & ARP_OPTS_MASK)
     {
-      if(b & ARP_LAYER_MASK) {
-        arpOptions &= ~ARP_LAYER_MASK;
-        arpOptions |= b;
-      }
-      else {
-        arpOptions^=b;
-        arpOptionsSave();
-        arpOptionsApply();
-      }
-      forceRefresh = 1;
+       arpOptions^=b;
+       arpOptionsSave();
+       arpOptionsApply();
+       forceRefresh = 1;
     } 
   }
 
   if(forceRefresh)
   {
-    uiSetLeds(ARP_OPTS_MASK|ARP_LAYER_MASK, arpOptions);
+    uiSetLeds(ARP_OPTS_MASK, arpOptions);
   }
 }
 
@@ -3863,7 +3875,7 @@ void editRun(unsigned long milliseconds)
   // is any menu key currently held?
   if(uiLastMenuKey != NO_VALUE)
   {
-    editFlags |= EDIT_FLAG_IS_HELD;      
+    editFlags |= EDIT_FLAG_IS_HELD;          
     
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
@@ -3910,11 +3922,8 @@ void editRun(unsigned long milliseconds)
   switch(editMode)
   {
   case EDIT_MODE_PATTERN:
-    if(editPressType >= EDIT_LONG_HOLD)
-      editPatternExt(dataKeyPress, forceRefresh);
-    else 
-      editPattern(dataKeyPress, forceRefresh);
-    break;    
+    editPattern(dataKeyPress, forceRefresh);
+    break;
   case EDIT_MODE_PATTERN_LENGTH:
     if(editPressType >= EDIT_LONG_HOLD)
       editPreferences(dataKeyPress, forceRefresh);
