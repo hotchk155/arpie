@@ -23,10 +23,10 @@
 //    5.0   Jun2017  Release A5
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
-//    5.3   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+//    5.3   May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  55
+#define VERSION_LO  3
 
 //
 // INCLUDE FILES
