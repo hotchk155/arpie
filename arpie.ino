@@ -24,9 +24,10 @@
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
 //    5.3   May18    BETA release with CVTab support
+//    5.4   May18    BETA release - bug fixes
 //
 #define VERSION_HI  5
-#define VERSION_LO  3
+#define VERSION_LO  4
 
 //
 // INCLUDE FILES
@@ -941,23 +942,26 @@ byte midiRead(unsigned long milliseconds, byte passThru, byte isMidiLockout)
                 break;
               }
             }
-            if(gPreferences & PREF_HH_CVCAL) {
-               switch(midiParams[0]) {
-                case HH_CVCAL_CC_SCALE:
-                  hhCVCalScale = (midiParams[1]&0x7F)-64;
-                  break;
-                case HH_CVCAL_CC_OFS:
-                  hhCVCalOfs = (midiParams[1]&0x7F)-64;
-                  break;
-                case HH_CVCAL_CC_SET:
-                  hhSetCV(midiParams[1],0);
-                  break;
-                case HH_CVCAL_CC_SAVE:
-                  gPreferences &= ~PREF_HH_CVCAL;
-                  hhCVCalSave();
-                  prefsSave();
-                  break;
-               }
+
+            if(hhMode == HH_MODE_CVTAB) {
+              if(gPreferences & PREF_HH_CVCAL) {
+                 switch(midiParams[0]) {
+                  case HH_CVCAL_CC_SCALE:
+                    hhCVCalScale = (midiParams[1]&0x7F)-64;
+                    break;
+                  case HH_CVCAL_CC_OFS:
+                    hhCVCalOfs = (midiParams[1]&0x7F)-64;
+                    break;
+                  case HH_CVCAL_CC_SET:
+                    hhSetCV(midiParams[1],0);
+                    break;
+                  case HH_CVCAL_CC_SAVE:
+                    gPreferences &= ~PREF_HH_CVCAL;
+                    hhCVCalSave();
+                    prefsSave();
+                    break;
+                 }
+              }
             }
             // otherwise fall through
           default:
@@ -2223,7 +2227,9 @@ void arpRun(unsigned long milliseconds)
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
 
-    hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
+    if(hhMode == HH_MODE_CVTAB) {
+      hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
+    }
  
     // check there is a note (not a rest at this) point in the pattern
     if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
@@ -2285,13 +2291,15 @@ void arpRun(unsigned long milliseconds)
 
       if(note > 0)
       { 
-        if(hhGlideActive) {
-          hhSetCV(note, 1);
-          hhSetGate(HH_GATE_OPEN);        
-        }
-        else {
-          hhSetCV(note, 0);
-          hhSetGate(HH_GATE_RETRIG);          
+        if(hhMode == HH_MODE_CVTAB) {
+          if(hhGlideActive) {
+            hhSetCV(note, 1);
+            hhSetGate(HH_GATE_OPEN);        
+          }
+          else {
+            hhSetCV(note, 0);
+            hhSetGate(HH_GATE_RETRIG);          
+          }
         }
         
         // if the previous note is still playing when a new one is played
