@@ -23,11 +23,10 @@
 //    5.0   Jun2017  Release A5
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
-//    5.3   May18    BETA release with CVTab support
-//    5.4   May18    BETA release - bug fixes
+//    5.3+  May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  4
+#define VERSION_LO  5
 
 //
 // INCLUDE FILES
@@ -1557,7 +1556,7 @@ enum {
 };
 
 enum {
-  ARP_SHOW_PATN,
+  ARP_SHOW_PATN = 0,
   ARP_SHOW_ACCENT,
   ARP_SHOW_GLIDE,
   ARP_SHOW_TIE,
@@ -2917,48 +2916,42 @@ void editPattern(char keyPress, byte forceRefresh)
   };
   if(editFlags & EDIT_FLAG_IS_HELD) { // PATN button is down now. 
 
-    // has the PATN button just been pressed on this call 
-    // into the function? if so clear the flag that records
-    // whether a layer change has taken place
     if(!(editFlags & EDIT_FLAG_1)) {
-      editFlags |= EDIT_FLAG_1;
-      editFlags &= ~EDIT_FLAG_2;
+      forceRefresh = 1;          
+      editFlags |= EDIT_FLAG_1;       
     }
-    if(keyPress != NO_VALUE && keyPress > 8) { // is a layer button pressed?      
+    if(keyPress >= 8 && keyPress < 16) { // is a layer button pressed?      
+      forceRefresh = 1;          
       arpShowLayer = keyPress - 8;      
-      editFlags |= EDIT_FLAG_2; // record that the user has changed layer
-      //state = 2; // user has changed layer
-      forceRefresh = 1;      
     }    
   }
   else {
 
-    // use the flags to work out if the PATN button has been released
-    // without a layer change in between. This action cancels returns
-    // back to the main pattern later
-    if((editFlags & EDIT_FLAG_1) && !(editFlags & EDIT_FLAG_2)) {
-      arpShowLayer = ARP_SHOW_PATN;
-      forceRefresh = 1;
-    }
-    // clear both the flags 
-    editFlags &= ~(EDIT_FLAG_1|EDIT_FLAG_2);
-    
+    if(editFlags & EDIT_FLAG_1) {
+      forceRefresh = 1; 
+      editFlags &= ~EDIT_FLAG_1;
+    }    
     if(keyPress != NO_VALUE)
     {
       _P.arpPattern[keyPress] = (_P.arpPattern[keyPress] ^ extBit[arpShowLayer]);
       forceRefresh = 1;
     }
   }
+
   
   if(forceRefresh || arpRefresh)
   {   
-    if(arpShowLayer == ARP_SHOW_PATN) {
+    if(editFlags & EDIT_FLAG_1) { 
+      uiClearLeds();
+      uiSetLeds(8, 8, uiLedMedium);
+      uiLeds[8+arpShowLayer] = uiLedBright;
+    }
+    else if(arpShowLayer == ARP_SHOW_PATN) {
       for(int i=0; i<16; ++i) {
         uiLeds[i] = (_P.arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
       }
     }
     else {
-      // copy the leds
       for(int i=0; i<16; ++i) {
         if((_P.arpPattern[i] & ARP_PATN_PLAY)) {
             uiLeds[i] = (_P.arpPattern[i] & extBit[arpShowLayer]) ? uiLedMedium : uiLedDim;
