@@ -26,7 +26,7 @@
 //    5.3+  May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  5
+#define VERSION_LO  6
 
 //
 // INCLUDE FILES
@@ -80,6 +80,7 @@ enum {
   
   PREF_HH_8THCLOCK=     (unsigned int)0b1000000000000000,
   PREF_HH_CVTAB_ACC=    (unsigned int)0b0100000000000000,
+  PREF_HH_CVTAB_HZVOLT= (unsigned int)0b0010000000000000,
   PREF_HH_CVCAL=        (unsigned int)0b0000000100000000,
       
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
@@ -2637,18 +2638,59 @@ void hhSetDAC(int dac) {
       Wire.write((byte)dac); 
       Wire.endTransmission();         
 }
-void hhSetCV(long note, byte glide) {
-      long cv = (((note-12) * 500)/12);
-      cv = ((cv * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
-      while(cv<0) cv+=500;
-      while(cv>4095) cv-=500;
 
-      hhDACTarget = cv<<16;
+
+long hhNote2DAC_HzVolt(long note) {
+  // use a hard coded lookup table to get the
+  // the DAC value for note in top octave
+  long dac;
+  if(note == 72)
+    dac = 4000; // we can just about manage a C6!
+  else switch((byte)note % 12) {  
+    case 0: dac = 2000; break;
+    case 1: dac = 2119; break;
+    case 2: dac = 2245; break;
+    case 3: dac = 2378; break;
+    case 4: dac = 2520; break;
+    case 5: dac = 2670; break;
+    case 6: dac = 2828; break;
+    case 7: dac = 2997; break;
+    case 8: dac = 3175; break;
+    case 9: dac = 3364; break;
+    case 10: dac = 3564; break;
+    case 11: dac = 3775; break; 
+  }
+
+  // transpose to the requested octave by 
+  // right shifting
+  byte octave = ((byte)note)/12;
+  if(octave > 5) octave = 5;
+  dac >>= (5-octave);
+  dac = ((dac * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
+
+  while(dac>4095) {
+    dac/=2;
+  }
+  return dac;
+}
+long hhNote2DAC_VOct(long note) {
+      long dac = (((note-12) * 500)/12);
+      dac = ((dac * (4096 + hhCVCalScale))/4096) + hhCVCalOfs;
+      while(dac<0) dac+=500;
+      while(dac>4095) dac-=500;
+      return dac;  
+}
+void hhSetCV(long note, byte glide) {
+      long dac = (gPreferences & PREF_HH_CVTAB_HZVOLT)? 
+        hhNote2DAC_HzVolt(note) : 
+        hhNote2DAC_VOct(note);
+
+      hhDACTarget = dac<<16;
       hhDACIncrement = (hhDACTarget - hhDACCurrent)/((long)synchStepPeriod);        
       
       if(!glide || !hhDACIncrement) {
         // immediately set the requested CV
-        hhSetDAC(cv);
+        hhSetDAC(dac);
         hhDACCurrent = hhDACTarget;      
         hhDACIncrement = 0;
       }
