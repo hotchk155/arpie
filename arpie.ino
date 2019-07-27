@@ -1414,6 +1414,10 @@ void synchRun(unsigned long milliseconds)
   }
   else if(syncStepAdvance) {
     --syncStepAdvance;
+    unsigned long ms = millis();
+    if(synchLastStepTime > 0)
+      synchStepPeriod = ms - synchLastStepTime;
+    synchLastStepTime = ms;    
     if(synchFlags & SYNCH_RESTART_ON_BEAT) {
       synchPlayIndex = 0;
     }
