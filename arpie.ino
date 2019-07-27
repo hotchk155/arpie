@@ -26,7 +26,7 @@
 //    5.3+  May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  7
+#define VERSION_LO  8
 
 //
 // INCLUDE FILES
@@ -319,7 +319,7 @@ enum
   UI_LEDPROFILE0_MED  = 3,
   UI_LEDPROFILE0_LO   = 1,
   UI_LEDPROFILE1_HI   = 255,
-  UI_LEDPROFILE1_MED  = 3,
+  UI_LEDPROFILE1_MED  = 25,
   UI_LEDPROFILE1_LO   = 1,
   UI_LEDPROFILE2_HI   = 255,
   UI_LEDPROFILE2_MED  = 25,
@@ -2249,20 +2249,10 @@ void arpRun(unsigned long milliseconds)
       }      
       editFlags |= EDIT_FLAG_FORCE_REFRESH;
     }
-
-    if(hhMode == HH_MODE_CVTAB) {
-      hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
-    }
  
     // check there is a note (not a rest at this) point in the pattern
     if((_P.arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
-    {
-      byte glide = 0;
-      if(_P.arpPattern[arpPatternIndex] & ARP_PATN_TIE)
-        glide = 2;
-      else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
-        glide = 1;
-        
+    {        
       // Keep the sequence index within range      
       if(arpSequenceIndex >= arpSequenceLength)
         arpSequenceIndex = 0;
@@ -2300,6 +2290,10 @@ void arpRun(unsigned long milliseconds)
           else {
             velocity = _P.arpVelocityMode? _P.arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
           }
+          
+          if(hhMode == HH_MODE_CVTAB) {
+            hhSetAccent(_P.arpPattern[arpPatternIndex] & ARP_PATN_ACCENT);
+          }
     
           // start the note playing
           if(note > 0)
@@ -2312,8 +2306,14 @@ void arpRun(unsigned long milliseconds)
         ++arpSequenceIndex;
       } while(playThru && arpSequenceIndex < arpSequenceLength);
 
+      byte glide = 0;
       if(note > 0)
       { 
+        if(_P.arpPattern[arpPatternIndex] & ARP_PATN_TIE)
+          glide = 2;
+        else if(_P.arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
+          glide = 1;
+        
         if(hhMode == HH_MODE_CVTAB) {
           if(hhGlideActive) {
             hhSetCV(note, 1);
