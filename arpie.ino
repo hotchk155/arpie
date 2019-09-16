@@ -26,7 +26,7 @@
 //    5.3+  May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  9
+#define VERSION_LO  10
 
 //
 // INCLUDE FILES
@@ -700,6 +700,13 @@ void uiSetHold() {
   uiHoldType &= ~UI_HOLD_AS_SHIFT;
 }
 
+void uiClearHold() {
+  uiHoldType &= ~UI_HOLD_CHORD;
+  uiHoldType &= ~UI_HOLD_PRESSED;
+  uiHoldType &= ~UI_HOLD_HELD;
+  uiHoldType &= ~UI_HOLD_AS_SHIFT;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -1295,6 +1302,19 @@ void synchResynch()
   synchLastPulseClockTime = 0;
 }
 
+// SYNCH REINIT
+void synchReInit() {
+  // set default play rate
+  _P.synchPlayRate = SYNCH_RATE_16;
+
+  // initialise internal synch generator
+  synchSetTempo(SYNCH_DEFAULT_BPM);
+
+  // reset the counters
+  synchRestartSequence();
+
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // SYNCH INIT
 void synchInit()
@@ -1302,6 +1322,11 @@ void synchInit()
   synchFlags = 0;
   synchAuxEventsHead = 0;
   synchAuxEventsTail = 0;
+  synchTicksToSend = 0;
+  synchStartSource = SYNCH_SOURCE_NONE;    
+  synchLastStepTime = 0;
+  synchStepPeriod = 0;
+  synchNextInternalTick = 0;
   
   // by default don't synch
   if(eepromGet(EEPROM_SYNCH_SOURCE,0,1,0)) 
@@ -1311,21 +1336,7 @@ void synchInit()
   if(eepromGet(EEPROM_SYNCH_SEND,0,1,0))
     synchFlags |= SYNCH_SEND_CLOCK;
   
-  synchTicksToSend = 0;
-  synchStartSource = SYNCH_SOURCE_NONE;  
-  
-  // set default play rate
-  _P.synchPlayRate = SYNCH_RATE_16;
-
-  synchLastStepTime = 0;
-  synchStepPeriod = 0;
-
-  // reset the counters
-  synchRestartSequence();
-
-  // initialise internal synch generator
-  synchSetTempo(SYNCH_DEFAULT_BPM);
-  synchNextInternalTick = 0;
+  synchReInit();
 
   pinMode(P_SYNCH_TICK, INPUT_PULLUP);
   pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
@@ -1628,7 +1639,6 @@ void arpReset() {
   arpTransposeSequencePos = 0;
   arpTransposeSequenceMask = 0;
 }
-
 ////////////////////////////////////////////////////////////////////////////////
 // ARP INIT
 void arpInit()
@@ -3138,7 +3148,13 @@ void editArpType(char keyPress, byte forceRefresh)
 void editArpOptions(char keyPress, byte forceRefresh)
 {
   int i;
-  if(keyPress >= 0 && keyPress < 16) {
+  if(keyPress == 15) {
+    arpStopNotes(millis(),NULL);
+    synchReInit();
+    arpInit();
+    uiClearHold();
+  }
+  else if(keyPress >= 0 && keyPress < 16) {
     unsigned int b = (1<<(15-keyPress));
     if(b & ARP_OPTS_MASK)
     {
@@ -3152,6 +3168,7 @@ void editArpOptions(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiSetLeds(ARP_OPTS_MASK, arpOptions);
+    uiLeds[15] = uiLedMedium;
   }
 }
 
