@@ -126,6 +126,7 @@ unsigned int gPreferences;
 
 // Hack header mode
 byte hhMode;
+char hhCurrentPatch;
 
 // CV TAB calibration data
 char hhCVCalScale;
@@ -1302,8 +1303,10 @@ void synchResynch()
   synchLastPulseClockTime = 0;
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // SYNCH REINIT
 void synchReInit() {
+  
   // set default play rate
   _P.synchPlayRate = SYNCH_RATE_16;
 
@@ -2803,6 +2806,7 @@ void hhInit()
   hhDACTarget = 0;
   hhDACIncrement = 0;
   hhGlideActive = 0;
+  hhCurrentPatch = -1;
   
   if(hhMode == HH_MODE_CVTAB) {
     Wire.begin();
@@ -3897,16 +3901,21 @@ void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRe
         editFlags = EDIT_FLAG_FORCE_REFRESH;      
         arpFlags |= ARP_FLAG_REBUILD;
         synchFlags |= SYNCH_RESTART_ON_BEAT; 
+        hhCurrentPatch = keyPress;
       }
       break;      
     case EDIT_MODE_SAVE_PATCH:
       _P.ver = ARP_PATCH_VERSION;
       hhWriteMemory(PATCH_ADDR(keyPress), (byte*)&_P, sizeof _P);
+      hhCurrentPatch = keyPress;
       forceRefresh = 1;
       break;
     case EDIT_MODE_CLEAR_PATCH:
       ver=0;
       hhWriteMemory(PATCH_ADDR(keyPress), &ver, 1);
+      if(keyPress==hhCurrentPatch) {
+        hhCurrentPatch = -1;
+      }
       forceRefresh = 1;
       break;      
     }
@@ -3919,9 +3928,14 @@ void editPatchAction(byte editMode, char keyPress, byte blinkState, byte forceRe
     }
   }
   else if(blinkState&1) {
-    byte phase = !!(blinkState & 0xF0);
+    byte phase = !(blinkState & 0xF0);
     for(int i=0; i<16; ++i) { 
-      uiLeds[i] = (uiLeds[i] == uiLedDim)? uiLedDim : phase? uiLedBright : uiLedMedium;
+      if(i==hhCurrentPatch) {
+        uiLeds[i] = (uiLeds[i] == uiLedDim)? uiLedDim : phase? uiLedBright : uiLedMedium;        
+      }
+      else {
+        uiLeds[i] = (uiLeds[i] == uiLedDim)? uiLedDim : (!phase)? uiLedBright : uiLedMedium;        
+      }
     }
   }
 }
