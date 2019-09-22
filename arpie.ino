@@ -26,7 +26,7 @@
 //    5.3+  May18    BETA release with CVTab support
 //
 #define VERSION_HI  5
-#define VERSION_LO  10
+#define VERSION_LO  11
 
 //
 // INCLUDE FILES
@@ -3655,7 +3655,7 @@ void editTempoSynch(char keyPress, byte forceRefresh)
     if(synchFlags & SYNCH_TO_MIDI)
     {
       uiLeds[0] = uiLedBright;
-      uiLeds[1] = !!(synchFlags & SYNCH_TO_MIDI) ? uiLedBright : uiLedMedium;                                                                                                                                                                                                                                                            
+      uiLeds[1] = !!(synchFlags & SYNCH_SEND_CLOCK) ? uiLedBright : uiLedMedium;                                                                                                                                                                                                                                                            
       
       uiLeds[13] = uiLedMedium;                                                                                                                                                                                                                                                            
       uiLeds[14] = uiLedMedium;                                                                                                                                                                                                                                                            
