@@ -3438,6 +3438,11 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     eepromSet(EEPROM_MIDI_OPTS2, midiOptions2);    
     forceRefresh = 1;
   }
+  else if(15 == keyPress)
+  {    
+    // LED 15 zeros tick count
+    synchFlags |= SYNCH_RESTART_ON_BEAT|SYNCH_ZERO_TICK_COUNT;           
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -3450,6 +3455,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     uiLeds[6] = !!(midiOptions&MIDI_OPTS_VOLCAFM_VEL)? uiLedBright : uiLedDim;    
     uiLeds[7] = !!(midiOptions&MIDI_OPTS_LOCAL_OFF)? uiLedBright : uiLedDim;    
     uiLeds[8] = !!(midiOptions2&MIDI_OPTS2_USE_NOTE_OFF)? uiLedBright : uiLedDim;        
+    uiLeds[15] = uiLedMedium;        
   }    
 }
 
