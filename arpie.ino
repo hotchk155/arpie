@@ -1070,7 +1070,6 @@ volatile byte synchAuxEvents[8];               // buffer to store incoming sync 
 volatile byte synchAuxEventsHead;
 volatile byte synchAuxEventsTail;
 byte synchClockOutPin;
-byte synchTickToPulseRatio;
 volatile byte syncStepAdvance;
 
 #define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
@@ -1124,6 +1123,11 @@ enum
 };
 
 
+//////////////////////////////////////////////////////////////////////////
+// synchTickToPulseRatio
+inline int synchTickToPulseRatio() {
+  return (gPreferences & PREF_HH_8THCLOCK)? 12:6;
+}
 
 //////////////////////////////////////////////////////////////////////////
 // HANDLER FOR A MIDI CLOCK TICK
@@ -1355,7 +1359,6 @@ void synchInit()
   synchInternalTicksSinceLastPulseClock = 0;  
   synchClockOutPin = 0;
   syncStepAdvance = 0;
-  synchTickToPulseRatio = (gPreferences & PREF_HH_8THCLOCK)? 12:6; // sixteenths or eigths    
   if(hhMode == HH_MODE_SYNCTAB) {
      pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
      pinMode(P_SYNCH_HH_CLKIN, INPUT);
@@ -1400,16 +1403,16 @@ void synchRun(unsigned long milliseconds)
   { 
     if(synchThisPulseClockPeriod) // have we got a clock period measurement?
     {      
-      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / synchTickToPulseRatio);  // infer bpm
+      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / synchTickToPulseRatio());  // infer bpm
       synchThisPulseClockPeriod = 0;
       synchNextInternalTick = milliseconds;  // tick immediately
-      while(synchInternalTicksSinceLastPulseClock++ < synchTickToPulseRatio)
+      while(synchInternalTicksSinceLastPulseClock++ < synchTickToPulseRatio())
         synchTick(SYNCH_SOURCE_INTERNAL); // make up any missed ticks (when tempo is being increased)
       synchInternalTicksSinceLastPulseClock = 0;
     }
     
     if(synchClockSendState == SYNCH_HH_EXT_CLOCK && 
-      synchInternalTicksSinceLastPulseClock >= synchTickToPulseRatio)
+      synchInternalTicksSinceLastPulseClock >= synchTickToPulseRatio())
     {
       // hold off any ticks until the next external pulse. External tempo is being reduced
     }
@@ -1485,12 +1488,11 @@ void synchRun(unsigned long milliseconds)
     if(!synchClockSendState)
     {
       // check if a new pulse is required
-      if(synchPulseClockTickCount>=synchTickToPulseRatio)
+      if(synchPulseClockTickCount>=synchTickToPulseRatio())
       {
         SYNCH_HH_CLOCK_ON;
-        synchPulseClockTickCount -= synchTickToPulseRatio;
+        synchPulseClockTickCount -= synchTickToPulseRatio();
         synchClockSendState = 1;
-        synchTickToPulseRatio = (gPreferences & PREF_HH_8THCLOCK)? 12:6; // sixteenths or eigths            
       }
     }
     else if(synchClockSendStateTimer != (byte)milliseconds)
