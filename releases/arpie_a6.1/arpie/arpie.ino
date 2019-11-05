@@ -24,7 +24,7 @@
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
 //    6.0   23Sep19  CVTab support plus enhancements/bug fixes
-//    6.1   05Feb19  MemoTab support
+//    6.1   05Nov19  MemoTab support
 //
 #define VERSION_HI  6
 #define VERSION_LO  1
