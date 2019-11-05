@@ -24,10 +24,9 @@
 //    5.1   18Jul17  Hack header fix
 //    5.2   11Mar18  Fix timing glitch on aux sync
 //    6.0   23Sep19  CVTab support plus enhancements/bug fixes
-//    6.1   05Feb19  MemoTab support
 //
 #define VERSION_HI  6
-#define VERSION_LO  1
+#define VERSION_LO  0
 
 //
 // INCLUDE FILES
@@ -2811,15 +2810,14 @@ void hhInit()
   hhGlideActive = 0;
   hhCurrentPatch = -1;
   
-  if(hhMode == HH_MODE_CVTAB || hhMode == HH_MODE_MEMOTAB) {
+  if(hhMode == HH_MODE_CVTAB) {
     Wire.begin();
     Wire.beginTransmission(DAC_ADDR); 
     Wire.write(0b10011001); // buffered Vref, powered up, 2x
     Wire.endTransmission();       
-  }
-  if(hhMode == HH_MODE_CVTAB) {
     pinMode(P_HH_CVTAB_GATE,OUTPUT);    
     digitalWrite(P_HH_CVTAB_GATE,LOW);    
+
     hhCVCalLoad();
   }
 }
