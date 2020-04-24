@@ -32,7 +32,6 @@
 *.GTO
 *.GTP
 *.GTS
-*.TXT
 *.gm1
 *.gbp
 *.zip
@@ -54,3 +53,5 @@ Desktop.ini
 
 
 ~$*.docx
+hardware/arpie_main_rev4_hotchk155/arpie_main_drills.txt
+hardware/arpie_main_rev4_hotchk155/arpie_main_drills_NPTH.txt
